@@ -1,0 +1,14 @@
+# Build output
+Deadeye.app/
+*.dSYM/
+
+# Generated from assets/deadeye-appicon.svg
+assets/Deadeye.iconset/
+
+.DS_Store
+
+# Kept locally, not published: engineering notes, the test harnesses behind them,
+# and a helper the app's "Check Game Settings" menu item replaces.
+docs/
+tools/
+check-mouse-capture.sh

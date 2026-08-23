@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Only the newest run per branch matters; cancel superseded ones.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test
+    # macos-latest is Apple Silicon, matching the arm64-apple-macosx13.0 target the
+    # build script compiles for.
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          swiftc --version
+
+      # No signing identity exists on a runner, so the build script takes its ad-hoc
+      # fallback. That is fine here: this job proves the sources compile, not that the
+      # artefact is distributable. Release signing is handled in release.yml.
+      - name: Build
+        run: ./build.sh --version 0.0.0-ci
+
+      - name: Check the bundle came out intact
+        run: |
+          test -x Deadeye.app/Contents/MacOS/Deadeye
+          test -f Deadeye.app/Contents/Info.plist
+          test -f Deadeye.app/Contents/Resources/AppIcon.icns
+          /usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Deadeye.app/Contents/Info.plist
+          codesign -dv Deadeye.app 2>&1 | head -3
+
+      # Headless geometry and detection tests — no window server needed.
+      - name: Test
+        run: ./run-tests.sh
+
+      - name: Check the private symbols the app relies on still resolve
+        run: |
+          for sym in SLSMainConnectionID SLSSetMenuBarInsetAndAlpha \
+                     SLSSetConnectionProperty SLSHideCursor SLSShowCursor; do
+            if dyld_info -exports /System/Library/PrivateFrameworks/SkyLight.framework/SkyLight \
+               | grep -q "_$sym\$"; then
+              echo "ok      $sym"
+            else
+              echo "MISSING $sym on $(sw_vers -productVersion)"
+              exit 1
+            fi
+          done

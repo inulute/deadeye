@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, without the leading v (e.g. 1.2.0)'
+        required: true
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Updater.swift compares dotted numeric versions, so the tag's leading "v" has
+      # to come off before it reaches CFBundleShortVersionString.
+      - name: Work out the version
+        id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::version '$VERSION' is not X.Y.Z"; exit 1 ;;
+          esac
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION"
+
+      - name: Build
+        run: ./build.sh --version '${{ steps.v.outputs.version }}'
+
+      - name: Verify the version actually landed in the bundle
+        run: |
+          GOT=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Deadeye.app/Contents/Info.plist)
+          echo "bundle reports: $GOT"
+          [ "$GOT" = '${{ steps.v.outputs.version }}' ] || {
+            echo "::error::bundle says $GOT, expected ${{ steps.v.outputs.version }}"; exit 1; }
+
+      - name: Test
+        run: ./run-tests.sh
+
+      # ditto, not zip: it preserves the bundle's symlinks and resource forks, which a
+      # plain zip mangles.
+      - name: Package
+        run: |
+          ditto -c -k --keepParent Deadeye.app "Deadeye-${{ steps.v.outputs.version }}.zip"
+          shasum -a 256 "Deadeye-${{ steps.v.outputs.version }}.zip" \
+            > "Deadeye-${{ steps.v.outputs.version }}.zip.sha256"
+          cat "Deadeye-${{ steps.v.outputs.version }}.zip.sha256"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          # This build is ad-hoc signed, not notarised, so Gatekeeper will quarantine
+          # it after download. The install note below is not optional decoration —
+          # without it the app reports itself as damaged on Apple Silicon.
+          cat > notes.md <<'NOTES'
+          ## Install
+
+          1. Unzip and drag **Deadeye** to `/Applications`.
+          2. This build is not notarised, so macOS quarantines it on download. Clear
+             that once:
+
+              ```sh
+              xattr -dr com.apple.quarantine /Applications/Deadeye.app
+              ```
+
+          3. Open it and grant **Accessibility** when asked. Deadeye needs it to see a
+             click before the menu bar does.
+
+          An eye appears in your menu bar. It blinks when a game starts and again when
+          you finish.
+
+          ## Checksum
+          NOTES
+          echo '```' >> notes.md
+          cat "Deadeye-$V.zip.sha256" >> notes.md
+          echo '```' >> notes.md
+
+          gh release create "v$V" \
+            "Deadeye-$V.zip" "Deadeye-$V.zip.sha256" \
+            --title "Deadeye v$V" \
+            --notes-file notes.md \
+            --verify-tag || \
+          gh release create "v$V" \
+            "Deadeye-$V.zip" "Deadeye-$V.zip.sha256" \
+            --title "Deadeye v$V" \
+            --notes-file notes.md
