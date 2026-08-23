@@ -174,20 +174,22 @@ jobs:
           ## Install
 
           1. Unzip and drag **Deadeye** to `/Applications`.
-          2. This build is not notarised, so macOS quarantines it on download. Clear
-             that once:
+          2. Open it. macOS will refuse the first time, because Deadeye is signed but
+             not notarised. Go to **System Settings > Privacy & Security**, scroll to
+             the bottom, and click **Open Anyway**.
+          3. Grant **Accessibility** when asked. Deadeye needs it to see a click
+             before the menu bar does.
 
-              ```sh
-              xattr -dr com.apple.quarantine /Applications/Deadeye.app
-              ```
+          <details>
+          <summary>If there is no Open Anyway button</summary>
 
-             If you skip this, macOS says **"Deadeye is damaged and can't be
-             opened"**. It is not damaged. There is no Open Anyway button for this
-             build, because that only appears for apps signed with a paid developer
-             certificate. The command is the only route.
+          Some Macs report the app as damaged instead. It is not damaged. Clear the
+          download quarantine and open it again:
 
-          3. Open it and grant **Accessibility** when asked. Deadeye needs it to see a
-             click before the menu bar does.
+          ```sh
+          xattr -dr com.apple.quarantine /Applications/Deadeye.app
+          ```
+          </details>
 
           An eye appears in your menu bar. It blinks when a game starts and again when
           you finish.

@@ -53,42 +53,42 @@ back exactly as it found them.
 
 1. Download the latest [release](https://github.com/inulute/deadeye/releases/latest)
    and drag **Deadeye** to Applications.
-2. Clear the download quarantine, once:
-
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/Deadeye.app
-   ```
-
-3. Open it and grant **Accessibility** when asked.
+2. Open it. macOS will refuse the first time, because Deadeye is not notarised. Go to
+   **System Settings → Privacy & Security**, scroll to the bottom, and click
+   **Open Anyway**.
+3. Grant **Accessibility** when asked.
 
 An eye appears in your menu bar. It blinks when a game starts and again when you
 finish.
 
-> **If you skipped step 2, macOS says "Deadeye is damaged and can't be opened".**
-> It is not damaged. Run the command above and open it again.
+<details>
+<summary>If there is no Open Anyway button</summary>
+
+Some Macs report the app as damaged rather than offering to open it anyway. It is
+not damaged. Clear the download quarantine and open it again:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Deadeye.app
+```
+
+That removes the quarantine flag and nothing else. If you would rather not run it,
+[build Deadeye yourself](#build-it-yourself) instead: a few seconds, and it needs
+only the Command Line Tools.
+</details>
 
 <details>
-<summary>Why step 2 is needed, and why there is no button for it</summary>
+<summary>Why macOS complains at all</summary>
 
-Deadeye is not notarised, because notarisation needs a paid Apple Developer account
-at $99 a year. macOS quarantines anything downloaded without one.
+Deadeye is signed, but not notarised. Notarisation means uploading each build to
+Apple for an automated malware scan, which requires a paid Apple Developer account
+at $99 a year.
 
-You may know the usual workaround: System Settings, Privacy & Security, **Open
-Anyway**. That button only appears for apps signed with a paid developer
-certificate that simply have not been notarised. This build has no certificate at
-all, so macOS reports it as damaged instead of unverified, and no button appears.
-The Terminal command is the only route, which is why it is step 2 rather than a
-footnote.
+Without it macOS quarantines the download and asks you to confirm once. After that
+it never asks again.
 
-It removes the quarantine flag and nothing else.
-
-**This step is the first thing donations will remove.** That account is the only
-thing standing between this and a normal drag-to-Applications install with no
-Terminal at all. If you want that step gone,
+**Notarisation is the first thing donations will pay for.** It is the only thing
+between this and an app that opens with no warning at all, so
 [buying me a coffee](https://support.inulute.com) goes straight at it.
-
-Prefer not to trust the command? [Build it yourself](#build-it-yourself). It takes
-a few seconds and needs only the Command Line Tools.
 </details>
 
 <details>
@@ -173,8 +173,8 @@ identity stable.
 Deadeye is free and always will be.
 
 - **[Buy me a coffee](https://support.inulute.com).** The first $99 goes on an Apple
-  Developer account, which gets notarisation and drops the Terminal command from the
-  install steps above. After that, hosting and domains.
+  Developer account, so Deadeye can be notarised and open with no warning at all.
+  After that, hosting and domains.
 - **Star the repo.** Costs nothing, helps more than you would think.
 - **Tell another Mac gamer.** At this stage that is worth more than money.
 
