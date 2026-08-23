@@ -155,23 +155,18 @@ jobs:
             syspolicy_check distribution Deadeye.app 2>&1 | grep -E "Adhoc|Notary|Severity" || true
           fi
 
+      # dmgbuild writes the .DS_Store carrying the window size, background and icon
+      # positions, so the styled image can be built here. create-dmg and the usual
+      # AppleScript recipes drive Finder, which cannot be scripted on a runner.
+      # Pure Python, so no brew install and nothing native to compile.
+      - name: Install dmgbuild
+        run: python3 -m pip install --quiet --disable-pip-version-check dmgbuild
+
       - name: Package as a disk image
         run: |
           set -euo pipefail
           V='${{ steps.v.outputs.version }}'
-          STAGE="$RUNNER_TEMP/dmg"
-          rm -rf "$STAGE"; mkdir -p "$STAGE"
-          cp -R Deadeye.app "$STAGE/"
-
-          # The symlink is most of the reason to ship a disk image rather than a zip.
-          # It puts the drag target next to the app, so people move it to Applications
-          # instead of running it from Downloads. An app launched from its download
-          # location while quarantined gets translocated to a random read-only path,
-          # which breaks its Accessibility grant and leaves Deadeye silently inert.
-          ln -s /Applications "$STAGE/Applications"
-
-          hdiutil create -volname "Deadeye" -srcfolder "$STAGE" \
-            -ov -format UDZO -quiet "Deadeye-$V.dmg"
+          dmgbuild -s assets/dmg/settings.py "Deadeye" "Deadeye-$V.dmg"
 
           # Sign the image as well as the app. Notarisation staples its ticket to the
           # disk image, so this is the same plumbing that step will need.
@@ -198,7 +193,14 @@ jobs:
           codesign -v "$MP/Deadeye.app"    || { echo "::error::app signature broken inside the image"; exit 1; }
           GOT=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$MP/Deadeye.app/Contents/Info.plist")
           [ "$GOT" = "$V" ] || { echo "::error::image contains version $GOT, expected $V"; exit 1; }
-          echo "disk image verified: $GOT, signed, drag target present"
+          # The styling lives in these two files. Without them the image opens as a
+          # default Finder window, which is what shipping a plain hdiutil image looked
+          # like.
+          test -f "$MP/.DS_Store"        || { echo "::error::no .DS_Store, the layout is missing"; exit 1; }
+          test -f "$MP/.background.tiff" || { echo "::error::no background image"; exit 1; }
+          COUNT=$(ls -A "$MP" | grep -vcE '^\.DS_Store$|^\.background\.tiff$|^\.fseventsd$|^\.Trashes$' || true)
+          [ "$COUNT" -eq 2 ] || { echo "::error::expected only the app and the alias at the root, found $COUNT"; ls -A "$MP"; exit 1; }
+          echo "disk image verified: $GOT, signed, styled, drag target present"
           hdiutil detach "$MP" -quiet
 
       - name: Publish release

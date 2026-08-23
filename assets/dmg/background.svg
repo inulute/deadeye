@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="800" viewBox="0 0 660 400" fill="none">
+  <defs>
+    <radialGradient id="lift" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.42" stop-color="#171716" stop-opacity="0.13"></stop>
+      <stop offset="0.78" stop-color="#171716" stop-opacity="0.045"></stop>
+      <stop offset="1"    stop-color="#171716" stop-opacity="0"></stop>
+    </radialGradient>
+    <linearGradient id="plate" x1="0.12" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"></stop>
+      <stop offset="0.58" stop-color="#F3F0E9"></stop>
+      <stop offset="1" stop-color="#E4DFD4"></stop>
+    </linearGradient>
+    <clipPath id="win"><rect width="660" height="400"></rect></clipPath>
+  </defs>
+  <g clip-path="url(#win)">
+    <rect width="660" height="400" fill="url(#plate)"></rect>
+    <ellipse cx="190" cy="209" rx="92" ry="86" fill="url(#lift)"></ellipse>
+
+    <g opacity="0.035" transform="translate(-140 -170) scale(32.5)">
+      <path d="M0.9 8 C4.2 0.6 11.8 0.6 15.1 8 C11.8 3.9 4.2 3.9 0.9 8 Z" fill="#171716"></path>
+      <path d="M0.9 8 C4.2 15.4 11.8 15.4 15.1 8 C11.8 12.1 4.2 12.1 0.9 8 Z" fill="#171716"></path>
+      <circle cx="8" cy="8" r="1.8" stroke="#171716" stroke-width="1.15" fill="none"></circle>
+    </g>
+
+    <text x="330" y="63" text-anchor="middle" fill="#171716" font-family="-apple-system, system-ui, 'Helvetica Neue', Helvetica, sans-serif" font-size="22" font-weight="600" letter-spacing="-0.44">Deadeye</text>
+    <text x="330" y="83" text-anchor="middle" fill="#6F675C" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" letter-spacing="1.8">KEEPS MACOS OUT OF YOUR GAME</text>
+
+    
+
+    <rect x="398" y="133" width="144" height="144" rx="32" stroke="#BEB6A6" stroke-width="1.5" stroke-dasharray="5 5" fill="none"></rect>
+
+    <path d="M267 205 H377" stroke="#A79E8D" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="1.6 7"></path>
+    <path d="M373 198.5 L383 205 L373 211.5 Z" fill="#5E574D"></path>
+
+    <text x="330" y="370" text-anchor="middle" fill="#5E574D" font-family="-apple-system, system-ui, 'Helvetica Neue', Helvetica, sans-serif" font-size="13">Drag Deadeye into Applications</text>
+  </g>
+</svg>
