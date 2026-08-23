@@ -66,6 +66,15 @@ struct DockState: Codable {
 	/// hiding its menu bar with no state file left to repair it.
 	var menuBarAutohide: String?
 
+	/// NSGlobalDomain `CGDisableCursorLocationMagnification`, the "shake the mouse to
+	/// find the cursor" accessibility feature. nil == key absent.
+	///
+	/// Recorded because turning it off writes a global preference that outlives the
+	/// process: measured, a `kill -9` while it was off left it off for the whole
+	/// machine. So it goes in the same state file as the Dock and is replayed on the
+	/// next launch if a session was interrupted.
+	var findCursorDisabled: String?
+
 	/// macOS names the hot corners `tl`, `tr`, `bl`, `br` — not `topleft` and friends,
 	/// which is what this used to write.
 	///
@@ -87,7 +96,8 @@ struct DockState: Codable {
 		return DockState(
 			autohide: Dock.read("autohide"),
 			autohideDelay: Dock.read("autohide-delay"),
-			corners: corners
+			corners: corners,
+			findCursorDisabled: Dock.readGlobal(FindCursor.key)
 		)
 	}
 }
@@ -136,6 +146,58 @@ enum Dock {
 	}
 }
 
+// MARK: - Shake to find the cursor
+
+/// Turns off "shake the mouse pointer to locate", which otherwise magnifies and
+/// reveals the cursor mid-game the moment the pointer moves quickly.
+///
+/// It overrides a hidden cursor, which is the point of an accessibility feature and
+/// exactly wrong during a game: a fast flick of the mouse while aiming is enough to
+/// put the macOS pointer back on screen.
+///
+/// `SLSPackagesDisableFindCursor` applies immediately, unlike writing the preference
+/// and waiting for something to re-read it. It does write that preference though, so
+/// the original value is captured into `DockState` and restored, and a session
+/// interrupted before restoring is replayed at the next launch.
+enum FindCursor {
+	static let key = "CGDisableCursorLocationMagnification"
+
+	private static let skyLight = dlopen(
+		"/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY)
+
+	private typealias MainConnectionID = @convention(c) () -> Int32
+	private typealias DisableFindCursor = @convention(c) (Int32, Bool) -> Int32
+
+	private static func symbol<T>(_ name: String, as type: T.Type) -> T? {
+		guard let skyLight, let p = dlsym(skyLight, name) else { return nil }
+		return unsafeBitCast(p, to: type)
+	}
+
+	private static let mainConnectionID = symbol("SLSMainConnectionID", as: MainConnectionID.self)
+	private static let disableFindCursor = symbol("SLSPackagesDisableFindCursor", as: DisableFindCursor.self)
+
+	static var isSupported: Bool { mainConnectionID != nil && disableFindCursor != nil }
+
+	@discardableResult
+	static func setDisabled(_ disabled: Bool) -> Bool {
+		guard let cid = mainConnectionID?(), let setter = disableFindCursor else { return false }
+		let err = setter(cid, disabled)
+		if err != 0 { Log.write("FINDCURSOR setDisabled(\(disabled)) failed err=\(err)") }
+		return err == 0
+	}
+
+	/// Puts it back exactly as it was, including "the key did not exist", which is not
+	/// the same as the key being present and false.
+	static func restore(to recorded: String?) {
+		if let recorded {
+			setDisabled(recorded == "1")
+		} else {
+			setDisabled(false)
+			Dock.deleteGlobal(key)
+		}
+	}
+}
+
 // MARK: - Game mode
 
 final class GameMode {
@@ -171,6 +233,12 @@ final class GameMode {
 	/// most invasive of the four could not.
 	var holdDock: Bool {
 		UserDefaults.standard.object(forKey: "holdDock") as? Bool ?? true
+	}
+
+	/// On by default, like the other hold-backs. A quick flick of the mouse while
+	/// aiming is enough to trigger it, and it deliberately overrides a hidden cursor.
+	var suppressFindCursor: Bool {
+		UserDefaults.standard.object(forKey: "suppressFindCursor") as? Bool ?? true
 	}
 
 	init() {
@@ -232,11 +300,12 @@ final class GameMode {
 		Stats.recordSession()
 		let corners = disableHotCorners
 		let dock = holdDock
+		let findCursor = suppressFindCursor
 		let url = stateURL
 
 		// Nothing to apply and nothing to capture: skip the subprocesses and the Dock
 		// restart entirely rather than writing a state file that restores to itself.
-		guard dock || corners else {
+		guard dock || corners || findCursor else {
 			Log.write("DOCK enable: nothing to hold back (dock and hot corners both off)")
 			return
 		}
@@ -260,6 +329,10 @@ final class GameMode {
 			if dock {
 				Dock.write("autohide", bool: true)
 				Dock.write("autohide-delay", float: "100000")
+			}
+
+			if findCursor {
+				FindCursor.setDisabled(true)
 			}
 
 			if corners {
@@ -318,6 +391,8 @@ final class GameMode {
 					Dock.delete("wvous-\(name)-corner")
 				}
 			}
+
+			FindCursor.restore(to: state.findCursorDisabled)
 
 			Dock.restart()
 			try? FileManager.default.removeItem(at: url)
@@ -442,6 +517,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	                                  action: #selector(toggleDock), keyEquivalent: "")
 	private let cornersItem = NSMenuItem(title: "Hot corners",
 	                                     action: #selector(toggleHotCorners), keyEquivalent: "")
+	private let findCursorItem = NSMenuItem(title: "Shake to find the cursor",
+	                                        action: #selector(toggleFindCursor), keyEquivalent: "")
 	private let suspendItem = NSMenuItem(title: "Overlay apps",
 	                                     action: #selector(toggleSuspend), keyEquivalent: "")
 	private let loginItem = NSMenuItem(title: "Launch at login",
@@ -666,7 +743,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		m.delegate = self
 
 		m.addItem(sectionHeader("Hold back while playing"))
-		for item in [shieldItem, dockItem, cornersItem, suspendItem] {
+		for item in [shieldItem, dockItem, cornersItem, findCursorItem, suspendItem] {
 			item.target = self
 			m.addItem(item)
 		}
@@ -745,6 +822,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		shieldItem.state = shieldMenuBar ? .on : .off
 		dockItem.state = gameMode.holdDock ? .on : .off
 		cornersItem.state = gameMode.disableHotCorners ? .on : .off
+		findCursorItem.state = gameMode.suppressFindCursor ? .on : .off
 		suspendItem.state = suspendApps ? .on : .off
 		loginItem.state = launchAtLogin ? .on : .off
 
@@ -972,6 +1050,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		UserDefaults.standard.set(now, forKey: "disableHotCorners")
 	}
 
+	@objc private func toggleFindCursor() {
+		UserDefaults.standard.set(!gameMode.suppressFindCursor, forKey: "suppressFindCursor")
+	}
+
 	@objc private func toggleDock() {
 		UserDefaults.standard.set(!gameMode.holdDock, forKey: "holdDock")
 	}
@@ -988,6 +1070,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		defaults.set(true, forKey: "shieldMenuBar")
 		defaults.set(true, forKey: "holdDock")
 		defaults.set(true, forKey: "disableHotCorners")
+		defaults.set(true, forKey: "suppressFindCursor")
 		defaults.set(true, forKey: "suspendApps")
 		defaults.set(true, forKey: "autoEnable")
 		Log.write("SETTINGS reset to recommended")

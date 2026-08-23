@@ -139,6 +139,7 @@ and one switch, with the rest under **Settings**.
 | **Menu bar clicks** | Sends clicks near the top to your game, and keeps the macOS arrow hidden. |
 | **The Dock** | Stops its edge tracking stealing your pointer. |
 | **Hot corners** | Stops a stray pointer throwing you into Mission Control. |
+| **Shake to find the cursor** | Stops a fast flick of the mouse magnifying the macOS pointer back onto your screen. |
 | **Overlay apps** | Quits notch apps and menu bar managers for the session. Which ones, in `Edit app list`. |
 
 **Deadeye:** *Activate automatically* (leave it on) and *Launch at login*.
