@@ -15,6 +15,10 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+    env:
+      # Whether a signing certificate is configured. Referenced in the step below,
+      # since the secrets context is not usable directly in a step-level `if`.
+      HAS_SIGNING_CERT: ${{ secrets.SIGNING_CERTIFICATE_P12_BASE64 != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +40,44 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building $VERSION"
 
+      # A runner starts with an empty keychain, so the certificate has to be imported
+      # before build.sh can find it. build.sh looks for an identity called "Deadeye
+      # Local Signing" and falls back to ad-hoc if it is absent, so a failure here
+      # degrades to exactly what shipped before rather than breaking the release.
+      - name: Import signing certificate
+        if: env.HAS_SIGNING_CERT == 'true'
+        env:
+          CERT_P12: ${{ secrets.SIGNING_CERTIFICATE_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          P12="$RUNNER_TEMP/cert.p12"
+
+          printf '%s' "$CERT_P12" | base64 --decode > "$P12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          security import "$P12" -k "$KEYCHAIN" -P "$CERT_PASSWORD"             -T /usr/bin/codesign -T /usr/bin/security
+
+          # Without this, codesign prompts for keychain access and hangs on a runner.
+          security set-key-partition-list -S apple-tool:,apple:,codesign:             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          # codesign refuses to use a self-signed identity that is not trusted for
+          # code signing, so the certificate is trusted inside this throwaway
+          # keychain. Same thing create-signing-identity.sh does locally.
+          security find-certificate -c "Deadeye Local Signing" -p "$KEYCHAIN" > "$RUNNER_TEMP/cert.pem"
+          security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$RUNNER_TEMP/cert.pem" ||             echo "::warning::could not mark the certificate as trusted; build.sh will fall back to ad-hoc"
+
+          # Put it on the search list so find-identity and codesign can see it.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          rm -f "$P12" "$RUNNER_TEMP/cert.pem"
+          security find-identity -v -p codesigning | sed 's/^/  /'
+
       - name: Build
         run: ./build.sh --version '${{ steps.v.outputs.version }}'
 
@@ -51,6 +93,13 @@ jobs:
 
       # ditto, not zip: it preserves the bundle's symlinks and resource forks, which a
       # plain zip mangles.
+      - name: Report how the app was signed
+        run: |
+          codesign -dvv Deadeye.app 2>&1 | grep -E "Authority|Signature|flags" || true
+          if command -v syspolicy_check >/dev/null; then
+            syspolicy_check distribution Deadeye.app 2>&1 | grep -E "Adhoc|Notary|Severity" || true
+          fi
+
       - name: Package
         run: |
           ditto -c -k --keepParent Deadeye.app "Deadeye-${{ steps.v.outputs.version }}.zip"
@@ -103,3 +152,7 @@ jobs:
             "Deadeye-$V.zip" "Deadeye-$V.zip.sha256" \
             --title "Deadeye v$V" \
             --notes-file notes.md
+
+      - name: Remove the signing keychain
+        if: always() && env.HAS_SIGNING_CERT == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true

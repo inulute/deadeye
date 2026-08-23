@@ -109,14 +109,17 @@ for candidate in "Deadeye Local Signing" "mac-gaimgfix Local Signing"; do
 	fi
 done
 if [ -n "$SIGN_ID" ]; then
-	codesign --force --sign "$SIGN_ID" --timestamp=none "$APP" >/dev/null 2>&1 \
-		&& echo "Signed with: $SIGN_ID" \
+	# --options runtime enables the hardened runtime. Deadeye works under it (the
+	# event tap, the SkyLight dlopen and SetsCursorInBackground were all verified),
+	# and notarisation requires it, so there is no reason to ship without it.
+	codesign --force --options runtime --sign "$SIGN_ID" --timestamp=none "$APP" >/dev/null 2>&1 \
+		&& echo "Signed with: $SIGN_ID (hardened runtime)" \
 		|| { echo "warning: signing with '$SIGN_ID' failed; falling back to ad-hoc" >&2
-		     codesign --force --sign - "$APP" >/dev/null 2>&1 || true; }
+		     codesign --force --options runtime --sign - "$APP" >/dev/null 2>&1 || true; }
 else
 	echo "note: no local signing identity — using ad-hoc, so Accessibility must be"
 	echo "      re-granted after each rebuild. Fix with ./create-signing-identity.sh"
-	codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+	codesign --force --options runtime --sign - "$APP" >/dev/null 2>&1 || true
 fi
 touch "$APP"
 
