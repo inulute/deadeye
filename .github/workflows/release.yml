@@ -159,8 +159,16 @@ jobs:
       # positions, so the styled image can be built here. create-dmg and the usual
       # AppleScript recipes drive Finder, which cannot be scripted on a runner.
       # Pure Python, so no brew install and nothing native to compile.
+      # Into a virtual environment, not the system Python. Runner Pythons are
+      # externally managed under PEP 668 and refuse a plain pip install with
+      # "externally-managed-environment", which failed a release.
       - name: Install dmgbuild
-        run: python3 -m pip install --quiet --disable-pip-version-check dmgbuild
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/dmgvenv"
+          "$RUNNER_TEMP/dmgvenv/bin/pip" install --quiet --disable-pip-version-check dmgbuild
+          echo "$RUNNER_TEMP/dmgvenv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/dmgvenv/bin/dmgbuild" --help >/dev/null && echo "dmgbuild ready"
 
       - name: Package as a disk image
         run: |
