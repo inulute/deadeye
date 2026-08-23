@@ -103,7 +103,13 @@ fi
 # renaming it would only cost a keychain password prompt and force every
 # Accessibility grant to be redone — the grant is tied to the certificate.
 SIGN_ID=""
-for candidate in "Deadeye Local Signing" "mac-gaimgfix Local Signing"; do
+# An identity named in the environment wins. CI imports whatever certificate is in
+# its secret and passes the name through, so this list does not have to know it.
+if [ -n "${SIGN_IDENTITY:-}" ] \
+   && security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_IDENTITY"; then
+	SIGN_ID="$SIGN_IDENTITY"
+fi
+[ -n "$SIGN_ID" ] || for candidate in "Deadeye Local Signing" "mac-gaimgfix Local Signing"; do
 	if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$candidate"; then
 		SIGN_ID="$candidate"; break
 	fi
