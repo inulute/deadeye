@@ -51,8 +51,8 @@ back exactly as it found them.
 
 ## Install
 
-1. Download the latest [release](https://github.com/inulute/deadeye/releases/latest)
-   and drag **Deadeye** to Applications.
+1. Download the latest [release](https://github.com/inulute/deadeye/releases/latest),
+   open the disk image, and drag **Deadeye** to the Applications folder beside it.
 2. Open it. macOS will refuse the first time, because Deadeye is not notarised. Go to
    **System Settings → Privacy & Security**, scroll to the bottom, and click
    **Open Anyway**.

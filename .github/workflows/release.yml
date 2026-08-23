@@ -155,12 +155,51 @@ jobs:
             syspolicy_check distribution Deadeye.app 2>&1 | grep -E "Adhoc|Notary|Severity" || true
           fi
 
-      - name: Package
+      - name: Package as a disk image
         run: |
-          ditto -c -k --keepParent Deadeye.app "Deadeye-${{ steps.v.outputs.version }}.zip"
-          shasum -a 256 "Deadeye-${{ steps.v.outputs.version }}.zip" \
-            > "Deadeye-${{ steps.v.outputs.version }}.zip.sha256"
-          cat "Deadeye-${{ steps.v.outputs.version }}.zip.sha256"
+          set -euo pipefail
+          V='${{ steps.v.outputs.version }}'
+          STAGE="$RUNNER_TEMP/dmg"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp -R Deadeye.app "$STAGE/"
+
+          # The symlink is most of the reason to ship a disk image rather than a zip.
+          # It puts the drag target next to the app, so people move it to Applications
+          # instead of running it from Downloads. An app launched from its download
+          # location while quarantined gets translocated to a random read-only path,
+          # which breaks its Accessibility grant and leaves Deadeye silently inert.
+          ln -s /Applications "$STAGE/Applications"
+
+          hdiutil create -volname "Deadeye" -srcfolder "$STAGE" \
+            -ov -format UDZO -quiet "Deadeye-$V.dmg"
+
+          # Sign the image as well as the app. Notarisation staples its ticket to the
+          # disk image, so this is the same plumbing that step will need.
+          if [ -n "${SIGN_IDENTITY:-}" ]; then
+            codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "Deadeye-$V.dmg" \
+              && echo "signed the disk image with $SIGN_IDENTITY"
+          else
+            echo "::warning::no signing identity; the disk image is unsigned"
+          fi
+
+          shasum -a 256 "Deadeye-$V.dmg" | tee "Deadeye-$V.dmg.sha256"
+
+      # Mount it and look inside. A disk image that builds but contains a broken app
+      # would otherwise only be discovered by whoever downloaded it.
+      - name: Verify the disk image
+        run: |
+          set -euo pipefail
+          V='${{ steps.v.outputs.version }}'
+          MP=$(hdiutil attach "Deadeye-$V.dmg" -nobrowse -readonly | grep /Volumes | awk '{print $NF}')
+          echo "mounted at $MP"
+          ls -l "$MP"
+          test -d "$MP/Deadeye.app"        || { echo "::error::no app in the image"; exit 1; }
+          test -L "$MP/Applications"       || { echo "::error::no Applications symlink"; exit 1; }
+          codesign -v "$MP/Deadeye.app"    || { echo "::error::app signature broken inside the image"; exit 1; }
+          GOT=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$MP/Deadeye.app/Contents/Info.plist")
+          [ "$GOT" = "$V" ] || { echo "::error::image contains version $GOT, expected $V"; exit 1; }
+          echo "disk image verified: $GOT, signed, drag target present"
+          hdiutil detach "$MP" -quiet
 
       - name: Publish release
         env:
@@ -173,7 +212,8 @@ jobs:
           cat > notes.md <<'NOTES'
           ## Install
 
-          1. Unzip and drag **Deadeye** to `/Applications`.
+          1. Open the disk image and drag **Deadeye** to the Applications folder
+             beside it.
           2. Open it. macOS will refuse the first time, because Deadeye is signed but
              not notarised. Go to **System Settings > Privacy & Security**, scroll to
              the bottom, and click **Open Anyway**.
@@ -197,16 +237,16 @@ jobs:
           ## Checksum
           NOTES
           echo '```' >> notes.md
-          cat "Deadeye-$V.zip.sha256" >> notes.md
+          cat "Deadeye-$V.dmg.sha256" >> notes.md
           echo '```' >> notes.md
 
           gh release create "v$V" \
-            "Deadeye-$V.zip" "Deadeye-$V.zip.sha256" \
+            "Deadeye-$V.dmg" "Deadeye-$V.dmg.sha256" \
             --title "Deadeye v$V" \
             --notes-file notes.md \
             --verify-tag || \
           gh release create "v$V" \
-            "Deadeye-$V.zip" "Deadeye-$V.zip.sha256" \
+            "Deadeye-$V.dmg" "Deadeye-$V.dmg.sha256" \
             --title "Deadeye v$V" \
             --notes-file notes.md
 
