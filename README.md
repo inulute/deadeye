@@ -64,13 +64,23 @@ back exactly as it found them.
 An eye appears in your menu bar. It blinks when a game starts and again when you
 finish.
 
-<details>
-<summary>Why step 2 is needed</summary>
+> **If you skipped step 2, macOS says "Deadeye is damaged and can't be opened".**
+> It is not damaged. Run the command above and open it again.
 
-Deadeye is signed but not notarised. Notarisation needs a paid Apple Developer
-account, which costs $99 a year. macOS quarantines anything downloaded without one,
-and a quarantined app says it is "damaged" rather than "not reviewed by Apple". The
-command removes the quarantine flag and nothing else.
+<details>
+<summary>Why step 2 is needed, and why there is no button for it</summary>
+
+Deadeye is not notarised, because notarisation needs a paid Apple Developer account
+at $99 a year. macOS quarantines anything downloaded without one.
+
+You may know the usual workaround: System Settings, Privacy & Security, **Open
+Anyway**. That button only appears for apps signed with a paid developer
+certificate that simply have not been notarised. This build has no certificate at
+all, so macOS reports it as damaged instead of unverified, and no button appears.
+The Terminal command is the only route, which is why it is step 2 rather than a
+footnote.
+
+It removes the quarantine flag and nothing else.
 
 **This step is the first thing donations will remove.** That account is the only
 thing standing between this and a normal drag-to-Applications install with no

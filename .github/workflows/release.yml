@@ -77,6 +77,11 @@ jobs:
               xattr -dr com.apple.quarantine /Applications/Deadeye.app
               ```
 
+             If you skip this, macOS says **"Deadeye is damaged and can't be
+             opened"**. It is not damaged. There is no Open Anyway button for this
+             build, because that only appears for apps signed with a paid developer
+             certificate. The command is the only route.
+
           3. Open it and grant **Accessibility** when asked. Deadeye needs it to see a
              click before the menu bar does.
 
