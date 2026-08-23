@@ -21,9 +21,10 @@
 import os
 
 app = os.environ.get("DMG_APP", "Deadeye.app")
-background = os.environ.get("DMG_BACKGROUND",
-                           os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                        "background.tiff"))
+# Paths are relative to the working directory, which is the repository root for both
+# the release workflow and a local build. dmgbuild exec()s this file without setting
+# __file__, so locating the background relative to the settings file is not an option.
+background = os.environ.get("DMG_BACKGROUND", "assets/dmg/background.tiff")
 
 files = [app]
 symlinks = {"Applications": "/Applications"}
