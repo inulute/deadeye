@@ -1222,7 +1222,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			}
 			shield.veilIsUp = veil.isUp
 			shield.cursorSuppressed = cursorSuppressor.isUp
-			shield.afterDelivering = { [weak self] in self?.cursorSuppressor.reassert() }
+			shield.onDeliveringStripClick = { [weak self] in
+				self?.cursorSuppressor.armForImminentReveal()
+			}
 			shield.raise()
 		} else {
 			shield.lower()

@@ -84,12 +84,29 @@ final class CursorSuppressor {
 	private var declaredBackgroundCursor = false
 	private var loggedFailure = false
 
-	/// True only when the window server currently considers the cursor visible. Used
-	/// for logging, never for control flow — the suppressor re-asserts unconditionally
-	/// because asking first would double the number of calls for no benefit.
+	/// Whether we are currently holding a hide. Tracked because hide and show are a
+	/// balanced pair: calling show without a matching hide pushes the window server's
+	/// count below zero and forces the cursor visible even when the game wants it gone.
+	private var holding = false
+
+	/// Whether the game itself is keeping the cursor hidden, as of the last peek.
+	///
+	/// This is the whole reason the class is not simply "hide while a game is focused".
+	/// Cursor visibility is a shared count and any connection holding a hide wins, so a
+	/// permanent hide from here silently outranks the game: RDR2's map, settings and
+	/// inventory screens ask for their cursor and never get it. Measured against a
+	/// harness that toggles the way a real game does, the cursor stayed hidden through
+	/// every menu.
+	private var gameHidesCursor = true
+
+	private var loggedIntent: Bool?
+
+	/// A peek releases the hide and reads back 30ms later, so overlapping peeks would
+	/// release twice and unbalance the window server's count.
+	private var peekInFlight = false
+
 	var cursorIsVisible: Bool { Self.cursorIsVisible?() ?? true }
 
-	/// Must be sent before any hide, or the hide is accepted and ignored.
 	private func declareBackgroundCursorOnce() {
 		guard !declaredBackgroundCursor, let connection,
 		      let setter = Self.setConnectionProperty else { return }
@@ -99,38 +116,89 @@ final class CursorSuppressor {
 		Log.write("CURSOR SetsCursorInBackground -> \(err)")
 	}
 
-	func raise() {
-		guard !isUp, Self.isSupported else { return }
-		declareBackgroundCursorOnce()
-		isUp = true
-		reassert()
-		Log.write("CURSOR suppressed — the macOS arrow stays hidden while the game is focused")
-	}
-
-	func lower() {
-		guard isUp else { return }
-		isUp = false
-		guard let connection else { return }
-		_ = Self.showCursor?(connection)
-		CGDisplayShowCursor(CGMainDisplayID())
-		Log.write("CURSOR restored")
-	}
-
-	/// Re-applies the hide. Cheap, idempotent, and called both from the poll loop and
-	/// immediately after a strip click is handed to the game.
-	///
-	/// Both are needed. A click at the top of the screen reveals the arrow as a
-	/// *consequence* of being processed, which happens after the event tap has already
-	/// returned — so the poll alone leaves a visible flicker of up to one poll
-	/// interval, which measured as a real one on screen. Re-asserting straight after
-	/// the click closes it to about a millisecond.
-	func reassert() {
-		guard isUp, let connection else { return }
+	private func hold() {
+		guard !holding, let connection else { return }
+		holding = true
 		let err = Self.hideCursor?(connection) ?? -999
 		CGDisplayHideCursor(CGMainDisplayID())
 		if err != 0, !loggedFailure {
 			loggedFailure = true
 			Log.write("CURSOR SLSHideCursor failed err=\(err)")
+		}
+	}
+
+	private func release() {
+		guard holding, let connection else { return }
+		holding = false
+		_ = Self.showCursor?(connection)
+		CGDisplayShowCursor(CGMainDisplayID())
+	}
+
+	func raise() {
+		guard !isUp, Self.isSupported else { return }
+		declareBackgroundCursorOnce()
+		isUp = true
+		reassert()
+		Log.write("CURSOR suppression armed, following the game's own cursor")
+	}
+
+	func lower() {
+		guard isUp else { return }
+		isUp = false
+		release()
+		loggedIntent = nil
+		Log.write("CURSOR restored")
+	}
+
+	/// Asks the game what it wants, and holds the cursor down only if the game is
+	/// already hiding it.
+	///
+	/// The hide has to be released before reading, because while we hold one the
+	/// reading reflects our own hide rather than the game's intent. It also has to be
+	/// released for a moment first: measured against a game that toggles its cursor,
+	/// reading at 0ms and 2ms after the release always came back "hidden" whatever the
+	/// game was doing, while 10ms and 30ms tracked it correctly every time. So the read
+	/// is deferred, and 30ms is used for margin.
+	///
+	/// Letting go for 30ms does not flash the cursor. During play the game is holding
+	/// its own hide, which is independent of ours, so the cursor stays hidden while we
+	/// are not looking. It only becomes visible if the game wanted it visible, which is
+	/// exactly what this is trying to find out. Deferred rather than slept, so the run
+	/// loop is not blocked for 30ms out of every poll.
+	func reassert() {
+		guard isUp, !peekInFlight else { return }
+		peekInFlight = true
+		release()
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+			guard let self else { return }
+			self.peekInFlight = false
+			guard self.isUp else { return }
+
+			self.gameHidesCursor = !self.cursorIsVisible
+			if self.gameHidesCursor { self.hold() }
+
+			if self.loggedIntent != self.gameHidesCursor {
+				self.loggedIntent = self.gameHidesCursor
+				Log.write(self.gameHidesCursor
+					? "CURSOR game is hiding its cursor, so the macOS arrow is suppressed too"
+					: "CURSOR game is showing its own cursor, so suppression stands down")
+			}
+		}
+	}
+
+	/// Called from the event tap just before a strip click is handed to the game.
+	///
+	/// A processed click at the top of the screen reveals the macOS arrow, so it has to
+	/// be put back. Only when the game is hiding its cursor: during a menu the arrow
+	/// *is* the game's cursor and hiding it is the bug this guards against.
+	func armForImminentReveal() {
+		guard isUp, gameHidesCursor else { return }
+		// The reveal happens after the tap returns, so the correction is dispatched
+		// rather than applied inline.
+		DispatchQueue.main.async { [weak self] in
+			guard let self, self.isUp, self.gameHidesCursor else { return }
+			self.holding = false          // the reveal defeated our hide; re-take it
+			self.hold()
 		}
 	}
 }
