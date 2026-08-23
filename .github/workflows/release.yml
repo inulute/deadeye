@@ -13,6 +13,7 @@ jobs:
   release:
     name: Build and publish
     runs-on: macos-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     env:
@@ -108,11 +109,18 @@ jobs:
           # A self-signed certificate has to be trusted for code signing or codesign
           # refuses to use it. The user trust domain is tried first; runners have
           # passwordless sudo, so the system domain is the fallback.
+          # Only the admin domain via sudo, and only with sudo -n. The user-domain form
+          # (security add-trusted-cert without -d) asks for authorisation through the
+          # GUI, and on a runner there is nobody to answer it: it does not fail, it
+          # hangs. A release sat in that state for minutes before being cancelled.
+          # sudo -n refuses rather than prompting, so this either works or returns.
           if security find-certificate -c "$CN" -p "$KEYCHAIN" > "$RUNNER_TEMP/cert.pem" 2>/dev/null; then
-            security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$RUNNER_TEMP/cert.pem" 2>&1 \
-              || sudo security add-trusted-cert -d -r trustRoot -p codeSign \
-                   -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem" 2>&1 \
-              || echo "::warning::could not mark $CN as trusted for code signing"
+            if sudo -n security add-trusted-cert -d -r trustRoot -p codeSign \
+                 -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem" 2>&1; then
+              echo "trusted $CN for code signing"
+            else
+              echo "::warning::could not trust $CN; codesign will refuse it and the build will be ad-hoc"
+            fi
             rm -f "$RUNNER_TEMP/cert.pem"
           else
             echo "::warning::could not export $CN to trust it"
