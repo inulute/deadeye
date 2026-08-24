@@ -8,7 +8,7 @@ No second cursor. No lost clicks. No menus over your game.
 
 [![Download](https://img.shields.io/github/v/release/inulute/deadeye?style=for-the-badge&label=Download&labelColor=2a2825&color=828282&logo=apple&logoColor=white)](https://github.com/inulute/deadeye/releases/latest)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-828282?style=for-the-badge&labelColor=2a2825&logo=apple&logoColor=white)](#requirements)
-[![Support](https://img.shields.io/badge/Support-Buy%20me%20a%20coffee-828282?style=for-the-badge&labelColor=2a2825)](https://support.inulute.com)
+[![Support - Buy me a coffee](https://img.shields.io/badge/Support-Buy%20me%20a%20coffee-C67C4E?style=for-the-badge&logo=buymeacoffee&logoColor=white&labelColor=2a2825)](https://support.inulute.com)
 
 </div>
 
