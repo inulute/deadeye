@@ -1347,7 +1347,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			// rather than in `lower()`, which runs on every Cmd-Tab and would take the
 			// cursor back the moment the player checked something in another window.
 			cursorSuppressor.isPaused = false
-			Updater.check { [weak self] _ in
+			// Forced. A game finishing is the one moment the answer matters, and the
+			// ordinary check is rate limited to once a day — but the "checked already"
+			// timestamp is written to disk while the answer it produced only lives in
+			// memory. So for a whole day after any restart the check would decline to
+			// run, find nothing cached, and report up to date. A handful of requests a
+			// day is nowhere near GitHub's limit.
+			Updater.check(force: true) { [weak self] _ in
 				self?.refreshStatus()
 				self?.announceUpdateIfAppropriate()
 			}
