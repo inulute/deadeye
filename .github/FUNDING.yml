@@ -1,2 +1,5 @@
 # Shown as a Sponsor button on the repository, and on every issue and pull request.
-custom: ['https://support.inulute.com']
+# There is no `paypal` key, so PayPal goes in `custom` alongside the donate page.
+github: [inulute]
+ko_fi: inulute
+custom: ['https://support.inulute.com', 'https://paypal.me/inulute']
