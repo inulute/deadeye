@@ -98,13 +98,13 @@ final class MenuBarShield {
 	var veilIsUp = false
 	var cursorSuppressed = false
 
-	/// Called from inside the tap, just before a strip click is handed to the game.
+	/// Called immediately after a click is handed to the game, to re-hide the arrow.
 	///
-	/// Synchronous and before returning the event on purpose: whether the game is
-	/// hiding its own cursor has to be read *before* the click is processed, because
-	/// processing it is what reveals the arrow. What to do about that is the
-	/// suppressor's decision, not this class's.
-	var onDeliveringStripClick: (() -> Void)?
+	/// The reveal happens as a *consequence* of the click being processed, which is
+	/// after this callback has returned the event — so it is dispatched rather than
+	/// called inline. The poll loop re-asserts too, but at poll rate that leaves a
+	/// visible flicker; this closes it to about a millisecond.
+	var afterDelivering: (() -> Void)?
 
 	/// On-screen window bounds of the frontmost game, in CoreGraphics coordinates,
 	/// refreshed by the poll loop.
@@ -346,7 +346,7 @@ final class MenuBarShield {
 		if veilIsUp, cursorSuppressed, strips.first?.contains(location) == true,
 		   gameWindowRects.contains(where: { $0.contains(location) }) {
 			Stats.recordDeliveredClick()
-			onDeliveringStripClick?()
+			if let afterDelivering { DispatchQueue.main.async(execute: afterDelivering) }
 			Log.write("SHIELD delivered click to \(game.localizedName ?? "game")"
 				+ " at CG(\(Int(location.x)), \(Int(location.y)))")
 			return Unmanaged.passUnretained(event)

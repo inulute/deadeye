@@ -113,15 +113,35 @@ final class AppSuspender {
 
 	/// A leftover state file means a previous run was killed before it could
 	/// relaunch anything. Replay it, or the user silently loses their apps.
-	func recoverIfNeeded() {
+	/// Decides what a state file found at launch means.
+	///
+	/// With no game running it is debris from a crash or a `kill -9`, and the apps
+	/// have to come back. With a game still running it is not leftover at all: the app
+	/// was replaced or restarted mid-session, and the managers are meant to stay down.
+	/// Relaunching them there is actively harmful — they come back asynchronously, the
+	/// next poll cannot see them yet, and one of them is a menu bar manager that
+	/// undoes the veil.
+	func recoverIfNeeded(gameIsRunning: Bool) {
 		guard FileManager.default.fileExists(atPath: stateURL.path) else { return }
+
+		if gameIsRunning {
+			if let data = try? Data(contentsOf: stateURL),
+			   let record = try? JSONDecoder().decode([Suspended].self, from: data) {
+				suspendedNames = record.map(\.name)
+			}
+			Log.write("SUSPEND state found at launch with a game still running — "
+				+ "leaving \(suspendedNames.isEmpty ? "them" : suspendedNames.joined(separator: ", "))"
+				+ " suspended")
+			return
+		}
+
 		Log.write("SUSPEND found leftover state at launch — restoring")
 		restore()
 	}
 
 	func suspend() {
-		// A present state file means this session already suspended; re-running
-		// would record an empty list and lose the record of what to bring back.
+		// A present state file means this session already suspended, and the record of
+		// what to bring back lives in it.
 		guard !FileManager.default.fileExists(atPath: stateURL.path) else { return }
 
 		let wanted = Set(configuredNames().map { $0.lowercased() })
@@ -135,16 +155,22 @@ final class AppSuspender {
 			app.terminate()   // graceful; forceTerminate would risk data loss
 		}
 
-		// Always write the file, even when nothing matched, so this does not retry on
-		// every poll for the whole session.
+		// Nothing matched, so there is nothing to remember. An empty file used to be
+		// written here to stop the scan repeating, and that latched the wrong thing:
+		// replace the app mid-session and the relaunch of the suspended managers is
+		// still in flight when the next poll arrives, so the scan finds nothing, writes
+		// an empty file, and every later attempt is blocked by it for the rest of the
+		// session. Thaw then runs all game long resetting the menu bar's alpha, which
+		// puts the veil down and makes the bar clickable again — the original bug.
+		// Re-scanning costs one pass over `runningApplications`, which the game
+		// detector already makes every poll anyway.
+		guard !record.isEmpty else { return }
+
 		if let data = try? JSONEncoder().encode(record) {
 			try? data.write(to: stateURL, options: .atomic)
 		}
 		suspendedNames = record.map(\.name)
-
-		if !record.isEmpty {
-			Log.write("SUSPEND quit while gaming: \(suspendedNames.joined(separator: ", "))")
-		}
+		Log.write("SUSPEND quit while gaming: \(suspendedNames.joined(separator: ", "))")
 	}
 
 	func restore() {

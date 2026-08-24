@@ -457,6 +457,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	private let gameMode = GameMode()
 	private let cursorGuard = CursorGuard()
 	private let hotKey = GlobalHotKey()
+
+	/// Separate from the on/off key so a player can hand themselves the cursor for a
+	/// map without disarming everything else Deadeye is holding back.
+	private let cursorHotKey = GlobalHotKey()
+
+	/// F2 is what was asked for and it is registered, but on a Mac that has not been
+	/// told to send function keys it is brightness and the key code never arrives. So
+	/// the Control-Option combination stays registered alongside it rather than being
+	/// replaced, and the player has something that works either way.
+	private let cursorFunctionKey = GlobalHotKey()
 	private let shield = MenuBarShield()
 	private let veil = MenuBarVeil()
 	private let cursorSuppressor = CursorSuppressor()
@@ -524,6 +534,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	private let loginItem = NSMenuItem(title: "Launch at login",
 	                                   action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
 
+	/// Control-Option-C. Two modifiers rather than three because this is the one
+	/// pressed mid-game, and no Command because CrossOver forwards Command combos
+	/// into the bottle. F2 was the obvious candidate and does not work: unless the
+	/// user has turned on "use F1, F2 as standard function keys", F2 is brightness
+	/// and the key code never reaches a hot key.
+	private let cursorItem = NSMenuItem(title: "Show the macOS cursor",
+	                                    action: #selector(toggleCursorVisible), keyEquivalent: "c")
+
 	private var autoEnable: Bool {
 		get { UserDefaults.standard.object(forKey: "autoEnable") as? Bool ?? true }
 		set { UserDefaults.standard.set(newValue, forKey: "autoEnable") }
@@ -553,7 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		Log.write("=== launched, released any stale lock ===")
 
 		GameMode.selfHeal()
-		suspender.recoverIfNeeded()
+		suspender.recoverIfNeeded(gameIsRunning: !Wine.runningGames().isEmpty)
 		let recovered = gameMode.recoverIfNeeded()
 
 		buildMenu()
@@ -564,9 +582,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			self?.toggle()
 		}
 
-		timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+		cursorHotKey.register(keyCode: GlobalHotKey.keyC,
+		                      modifiers: GlobalHotKey.controlOption,
+		                      identifier: 2) { [weak self] in
+			self?.toggleCursorVisible()
+		}
+
+		cursorFunctionKey.register(keyCode: GlobalHotKey.keyF2,
+		                           modifiers: GlobalHotKey.noModifiers,
+		                           identifier: 3) { [weak self] in
+			self?.toggleCursorVisible()
+		}
+
+		// Added to the common run loop modes rather than scheduled plainly. A plain
+		// scheduled timer only fires in the default mode, so opening Deadeye's own menu
+		// or putting up an alert stopped the poll entirely — and with it every chance
+		// to notice the game was no longer frontmost and stand everything down.
+		let poller = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
 			self?.poll()
 		}
+		RunLoop.main.add(poller, forMode: .common)
+		timer = poller
 
 		// React to focus changes immediately rather than up to a poll late: after
 		// Cmd-Tab the shield must come down at once or the menu bar feels dead.
@@ -591,6 +627,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	func applicationWillTerminate(_ notification: Notification) {
 		pulseTimer?.invalidate()
 		hotKey.unregister()
+		cursorHotKey.unregister()
+		cursorFunctionKey.unregister()
 		shield.lower()
 		veil.lower()
 		cursorSuppressor.lower()
@@ -706,6 +744,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		toggleMenuItem.target = self
 		toggleMenuItem.keyEquivalentModifierMask = [.control, .option, .command]
 		menu.addItem(toggleMenuItem)
+
+		// The second verb, and the only one that earns a place beside the first: it is
+		// the thing a player reaches for mid-game, when a map wants a cursor Deadeye is
+		// holding down. Hidden unless a game is running, so the front menu still reads
+		// as one verb the rest of the time.
+		cursorItem.target = self
+		cursorItem.keyEquivalent = String(UnicodeScalar(NSF2FunctionKey)!)
+		cursorItem.keyEquivalentModifierMask = []
+		menu.addItem(cursorItem)
 
 		menu.addItem(.separator())
 
@@ -825,6 +872,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		findCursorItem.state = gameMode.suppressFindCursor ? .on : .off
 		suspendItem.state = suspendApps ? .on : .off
 		loginItem.state = launchAtLogin ? .on : .off
+		cursorItem.title = cursorSuppressor.isPaused
+			? "Hide the macOS Cursor" : "Show the macOS Cursor"
+		cursorItem.isHidden = detectedGames.isEmpty
 
 		if let summary = Stats.summary {
 			statsMenuItem.title = summary
@@ -1006,6 +1056,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	}
 
 	// MARK: Actions
+
+	/// Hands the macOS arrow to the player, or takes it back.
+	///
+	/// Only while a game is running: outside that the arrow is the system's and
+	/// nothing is suppressing it, so a toggle would set a flag nobody reads and the
+	/// key would feel broken.
+	@objc private func toggleCursorVisible() {
+		guard !detectedGames.isEmpty else {
+			Log.write("CURSOR toggle ignored — no game running")
+			return
+		}
+		Log.write("CURSOR toggle requested (currently "
+			+ (cursorSuppressor.isPaused ? "visible" : "hidden") + ")")
+		cursorSuppressor.isPaused.toggle()
+		refreshStatus()
+	}
 
 	@objc private func toggle() {
 		let turningOn = !gameMode.isActive
@@ -1277,6 +1343,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 		if detectedGames.isEmpty, wasPlaying {
 			wasPlaying = false
+			// A cursor handed over for a map belongs to that session. Cleared here
+			// rather than in `lower()`, which runs on every Cmd-Tab and would take the
+			// cursor back the moment the player checked something in another window.
+			cursorSuppressor.isPaused = false
 			Updater.check { [weak self] _ in
 				self?.refreshStatus()
 				self?.announceUpdateIfAppropriate()
@@ -1305,7 +1375,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			}
 			shield.veilIsUp = veil.isUp
 			shield.cursorSuppressed = cursorSuppressor.isUp
-			shield.onDeliveringStripClick = { [weak self] in
+			shield.afterDelivering = { [weak self] in
 				self?.cursorSuppressor.armForImminentReveal()
 			}
 			shield.raise()
