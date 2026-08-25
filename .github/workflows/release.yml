@@ -234,27 +234,43 @@ jobs:
           cat >> notes.md <<'NOTES'
           ## Install
 
-          1. Open the disk image and drag **Deadeye** to the Applications folder
-             beside it.
-          2. Open it. macOS will refuse the first time, because Deadeye is signed but
-             not notarised. Go to **System Settings > Privacy & Security**, scroll to
-             the bottom, and click **Open Anyway**.
-          3. Grant **Accessibility** when asked. Deadeye needs it to see a click
+          Deadeye is signed but not notarised, so macOS stops it twice on the way in.
+          Both stops have the same answer.
+
+          1. **Open the disk image.** macOS will say it could not verify it. Click
+             **Done**, not Move to Bin. Then open **System Settings > Privacy &
+             Security**, scroll to the bottom, and click **Open Anyway**. Open the
+             image again and it mounts normally.
+          2. **Drag Deadeye onto the Applications folder** in the window that opens.
+          3. **Open Deadeye from Applications.** If macOS stops it again, it is the
+             same Open Anyway button in the same place.
+          4. **Grant Accessibility** when asked. Deadeye needs it to see a click
              before the menu bar does.
 
-          <details>
-          <summary>If there is no Open Anyway button</summary>
+          An eye appears in your menu bar. It blinks when a game starts and again
+          when you finish.
 
-          Some Macs report the app as damaged instead. It is not damaged. Clear the
-          download quarantine and open it again:
+          <details>
+          <summary>Doing it from the Terminal instead</summary>
+
+          Clearing the download quarantine does the same thing as Open Anyway, and
+          skips both dialogs:
 
           ```sh
+          xattr -dr com.apple.quarantine ~/Downloads/Deadeye-*.dmg
           xattr -dr com.apple.quarantine /Applications/Deadeye.app
           ```
           </details>
 
-          An eye appears in your menu bar. It blinks when a game starts and again when
-          you finish.
+          <details>
+          <summary>Why macOS asks at all</summary>
+
+          Notarising means paying Apple $99 a year for a developer account. Deadeye is
+          free and there is no money behind it, so it ships signed but not notarised,
+          and macOS treats that the same as unknown. Signing harder does not help: the
+          disk image is already signed and Gatekeeper still refuses it, because what it
+          checks for is notarisation. The prompts go away the day that is paid for.
+          </details>
 
           ## Checksum
           NOTES
