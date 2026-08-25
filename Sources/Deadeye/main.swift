@@ -558,6 +558,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	func applicationDidFinishLaunching(_ notification: Notification) {
 		NSApp.setActivationPolicy(.accessory)
 
+		// Before anything that can put a dialog on screen, and before the shield's
+		// event tap goes up. A tap created from the disk image raises the
+		// Accessibility prompt for a copy that is about to stop existing, which is
+		// exactly the double-prompt this avoids.
+		if Install.moveToApplicationsIfNeeded() { return }
+
 		// Mouse association is system-wide, so a lock left behind by a previous
 		// run that was killed would freeze the cursor for every app. Always
 		// release before doing anything else.
