@@ -219,19 +219,13 @@ jobs:
           # This build is ad-hoc signed, not notarised, so Gatekeeper will quarantine
           # it after download. The install note below is not optional decoration —
           # without it the app reports itself as damaged on Apple Silicon.
-          # Two heredocs on purpose. This one is unquoted so the version expands into
-          # the download link; the body below stays quoted because it contains
-          # backticks that an unquoted heredoc would run as commands.
-          cat > notes.md <<BANNER
+          # Quoted heredoc: the body contains backticks that an unquoted one would run
+          # as commands. Nothing in here needs the version interpolated.
+          cat > notes.md <<'NOTES'
           <div align="center">
              <img src="https://raw.githubusercontent.com/inulute/deadeye/refs/heads/main/assets/deadeye-lockup.svg" height="160px"/>
-             <br><br>
-             <a href="https://github.com/${{ github.repository }}/releases/download/v$V/Deadeye-$V.dmg"><img src="https://img.shields.io/badge/Download-Deadeye%20v$V.dmg-16130F?style=for-the-badge&logo=apple&logoColor=F4EDDF&labelColor=3C372F" alt="Download Deadeye $V"/></a>
           </div>
 
-          BANNER
-
-          cat >> notes.md <<'NOTES'
           ## Install
 
           Deadeye is signed but not notarised, so macOS stops it twice on the way in.
@@ -271,12 +265,7 @@ jobs:
           disk image is already signed and Gatekeeper still refuses it, because what it
           checks for is notarisation. The prompts go away the day that is paid for.
           </details>
-
-          ## Checksum
           NOTES
-          echo '```' >> notes.md
-          cat "Deadeye-$V.dmg.sha256" >> notes.md
-          echo '```' >> notes.md
 
           gh release create "v$V" \
             "Deadeye-$V.dmg" "Deadeye-$V.dmg.sha256" \
