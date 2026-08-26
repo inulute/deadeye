@@ -20,8 +20,9 @@ import AppKit
 ///   80% × 54% and read as small and weak in the menu bar.
 /// * Lids are ~2.5 units thick. A rejected candidate had 0.3-unit lids that
 ///   disappeared into a grey smudge at menu bar size.
-/// * The pupil keeps at least 0.6 units of clearance from every lid, so the shapes
-///   never blob together when drawn small.
+/// * With the eye open the pupil keeps at least 0.6 units of clearance from every
+///   lid, so the shapes never blob together when drawn small. As the lids close they
+///   paint over the pupil, rather than the pupil growing out of the eye.
 enum Icon {
 	/// Idle is a calm, symmetric open eye with a ring pupil. Active swaps the smooth
 	/// upper lid for an angular hooded wedge — the "hunter eye" — and fills the pupil.
@@ -36,10 +37,15 @@ enum Icon {
 	private static let leftCorner = CGPoint(x: 0.9, y: 8)
 	private static let rightCorner = CGPoint(x: 15.1, y: 8)
 
-	/// Where the shapes converge mid-blink. Deliberately not y=8: collapsing fully
-	/// makes both paths degenerate and the glyph vanishes entirely.
-	private static let slitTop: CGFloat = 7.62
-	private static let slitBottom: CGFloat = 8.38
+	/// Where the shapes converge mid-blink.
+	///
+	/// The two lids meet on `shutInner` and their outer edges stop short of it, so a
+	/// shut eye is one solid lens about 0.76 units thick. Lerping a lid's outer edge
+	/// onto its inner edge instead gave both paths zero area, and the glyph vanished
+	/// for a frame at the midpoint of every blink.
+	private static let shutOuterTop: CGFloat = 7.62
+	private static let shutOuterBottom: CGFloat = 8.38
+	private static let shutInner: CGFloat = 8
 
 	private static func lerp(_ from: CGFloat, _ to: CGFloat, _ t: CGFloat) -> CGFloat {
 		from + (to - from) * t
@@ -49,8 +55,8 @@ enum Icon {
 
 	/// Lower lid — the same in both states.
 	private static func lowerLid(closed t: CGFloat) -> NSBezierPath {
-		let outer = lerp(15.4, slitBottom, t)
-		let inner = lerp(12.1, slitBottom, t)
+		let outer = lerp(15.4, shutOuterBottom, t)
+		let inner = lerp(12.1, shutInner, t)
 		let path = NSBezierPath()
 		path.move(to: leftCorner)
 		path.curve(to: rightCorner,
@@ -65,8 +71,8 @@ enum Icon {
 
 	/// Idle upper lid — smooth mirror of the lower one.
 	private static func idleUpperLid(closed t: CGFloat) -> NSBezierPath {
-		let outer = lerp(0.6, slitTop, t)
-		let inner = lerp(3.9, slitTop, t)
+		let outer = lerp(0.6, shutOuterTop, t)
+		let inner = lerp(3.9, shutInner, t)
 		let path = NSBezierPath()
 		path.move(to: leftCorner)
 		path.curve(to: rightCorner,
@@ -88,16 +94,61 @@ enum Icon {
 	/// It intentionally overshoots the 16-unit box at both ends, which keeps the
 	/// corners crisp rather than clipping them to a blunt edge.
 	private static func activeUpperLid(closed t: CGFloat) -> NSBezierPath {
-		func y(_ v: CGFloat) -> CGFloat { lerp(v, slitTop, t) }
+		// The wedge's lower boundary and its two corners ride the meeting line; the
+		// peak and its controls ride the outer line. Sending every point to a single
+		// line, as this did, flattened the wedge to zero area at full close.
+		func inner(_ v: CGFloat) -> CGFloat { lerp(v, shutInner, t) }
+		func outer(_ v: CGFloat) -> CGFloat { lerp(v, shutOuterTop, t) }
 		let path = NSBezierPath()
-		path.move(to: CGPoint(x: 16.0357, y: y(8.09445)))
-		path.line(to: CGPoint(x: 3.64752, y: y(5.98978)))
-		path.line(to: CGPoint(x: 0.29390, y: y(8.36741)))
-		path.line(to: CGPoint(x: 2.86391, y: y(4.13394)))
-		path.curve(to: CGPoint(x: 3.51494, y: y(3.82216)),
-		           controlPoint1: CGPoint(x: 3.04360, y: y(3.94164)),
-		           controlPoint2: CGPoint(x: 3.22882, y: y(3.83966)))
-		path.line(to: CGPoint(x: 16.0357, y: y(8.09445)))
+		path.move(to: CGPoint(x: 16.0357, y: inner(8.09445)))
+		path.line(to: CGPoint(x: 3.64752, y: inner(5.98978)))
+		path.line(to: CGPoint(x: 0.29390, y: inner(8.36741)))
+		path.line(to: CGPoint(x: 2.86391, y: outer(4.13394)))
+		path.curve(to: CGPoint(x: 3.51494, y: outer(3.82216)),
+		           controlPoint1: CGPoint(x: 3.04360, y: outer(3.94164)),
+		           controlPoint2: CGPoint(x: 3.22882, y: outer(3.83966)))
+		path.line(to: CGPoint(x: 16.0357, y: inner(8.09445)))
+		path.close()
+		return path
+	}
+
+	/// The gap between the lids — the white of the eye.
+	///
+	/// The pupil is clipped to this. Without it the pupil kept its full radius while the
+	/// lids closed over it, and from about `lidClose` 0.25 it reached past them: an
+	/// eyeball outside the eye for a third of every blink. Painting the lids over the
+	/// pupil instead is not enough, because the lids grow thin as they close and stop
+	/// covering the parts of the pupil that stick out beyond them.
+	private static func aperture(_ state: State, closed t: CGFloat) -> NSBezierPath {
+		func inner(_ v: CGFloat) -> CGFloat { lerp(v, shutInner, t) }
+		let lowerInner = inner(12.1)
+		let path = NSBezierPath()
+
+		switch state {
+		case .idle:
+			let upperInner = inner(3.9)
+			path.move(to: leftCorner)
+			path.curve(to: rightCorner,
+			           controlPoint1: CGPoint(x: 4.2, y: upperInner),
+			           controlPoint2: CGPoint(x: 11.8, y: upperInner))
+			path.curve(to: leftCorner,
+			           controlPoint1: CGPoint(x: 11.8, y: lowerInner),
+			           controlPoint2: CGPoint(x: 4.2, y: lowerInner))
+
+		case .active:
+			// Bounded above by the hood's inner edge, which is exactly where the hood
+			// covers the pupil in assets/deadeye-active.svg. Clipping there rather than
+			// relying on paint order gives the same open-eye mark and also holds once
+			// the hood is too thin to cover anything.
+			let leftTip = CGPoint(x: 0.29390, y: inner(8.36741))
+			path.move(to: leftTip)
+			path.line(to: CGPoint(x: 3.64752, y: inner(5.98978)))
+			path.line(to: CGPoint(x: 16.0357, y: inner(8.09445)))
+			path.curve(to: leftTip,
+			           controlPoint1: CGPoint(x: 11.8, y: lowerInner),
+			           controlPoint2: CGPoint(x: 4.2, y: lowerInner))
+		}
+
 		path.close()
 		return path
 	}
@@ -123,9 +174,12 @@ enum Icon {
 				shape.fill()
 			}
 
-			// Past roughly halfway the lids have met, and a pupil showing through a
-			// closed eye looks like a rendering fault.
-			guard lidClose < 0.45 else { return true }
+			// Clipped, so the pupil is bounded by the lids at every point of the blink.
+			NSGraphicsContext.saveGraphicsState()
+			defer { NSGraphicsContext.restoreGraphicsState() }
+			let gap = aperture(state, closed: lidClose)
+			gap.transform(using: transform)
+			gap.addClip()
 
 			let centre = CGPoint(x: 8 * scale, y: 8 * scale)
 			switch state {
@@ -134,7 +188,13 @@ enum Icon {
 				NSBezierPath(ovalIn: NSRect(x: centre.x - r, y: centre.y - r,
 				                            width: r * 2, height: r * 2)).fill()
 			case .idle:
-				let r = 1.8 * scale
+				// A ring has a hole, and clipping a full-size one into a narrow gap leaves
+				// slivers of that hole showing as gaps in the slit. Sizing it to the gap
+				// keeps it whole, and once the gap is thinner than the stroke the ring
+				// closes into a solid dot on its own. At lidClose 0 this is still 1.8.
+				let halfGap = 0.375 * (lerp(12.1, shutInner, lidClose)
+				                       - lerp(3.9, shutInner, lidClose))
+				let r = min(1.8, max(0, halfGap - 0.575)) * scale
 				let ring = NSBezierPath(ovalIn: NSRect(x: centre.x - r, y: centre.y - r,
 				                                      width: r * 2, height: r * 2))
 				ring.lineWidth = 1.15 * scale
