@@ -2,9 +2,6 @@
 //  Deadeye. Copyright (C) 2026 inulute.
 //  Licensed under the GNU General Public License v3.0. See LICENSE.
 //
-//  A log file, because the interesting behaviour happens while a fullscreen game
-//  has the display and nobody can watch a console.
-//
 
 import Foundation
 
@@ -24,8 +21,6 @@ enum Log {
 		return f
 	}()
 
-	/// Only state *changes* should be logged from polling code — a 4 Hz tick
-	/// writing every sample would bury the transitions that matter.
 	static func write(_ message: String) {
 
 		let line = "\(formatter.string(from: Date()))  \(message)\n"

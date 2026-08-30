@@ -3,8 +3,6 @@
 # Deadeye. Copyright (C) 2026 inulute.
 # Licensed under the GNU General Public License v3.0. See LICENSE.
 #
-# Compiles and runs the Wine detection tests.
-#
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

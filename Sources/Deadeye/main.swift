@@ -2,30 +2,12 @@
 //  Deadeye. Copyright (C) 2026 inulute.
 //  Licensed under the GNU General Public License v3.0. See LICENSE.
 //
-//  Deadeye
-//
-//  A menu bar app that disables the Dock while a CrossOver/Wine game is running,
-//  and restores it exactly as it was afterwards.
-//
-//  The Dock keeps its screen-edge tracking zones armed over any window that is
-//  not a *true* native fullscreen window. Wine deliberately avoids native
-//  fullscreen (it would put the game in its own Space and break Wine's window
-//  management), so the Dock keeps stealing the pointer and tearing down the
-//  cursor capture that relative-mouse games depend on. Result: the macOS cursor
-//  escapes the game, and trackpad gestures freeze.
-//
-//  Setting autohide-delay to 100000 seconds means the Dock never slides out, so
-//  those zones never fire.
-//
 
 import AppKit
 import Darwin
 import ServiceManagement
 
-// MARK: - Shell
-
 enum Sh {
-	/// Runs a tool and returns (exitStatus, trimmedStdout).
 	@discardableResult
 	static func run(_ path: String, _ args: [String]) -> (status: Int32, out: String) {
 		let proc = Process()
@@ -47,45 +29,16 @@ enum Sh {
 	}
 }
 
-// MARK: - Dock state
-
-/// A `defaults` key has three distinct states — absent, present-and-false,
-/// present-and-true — and `defaults delete` is not the same as
-/// `defaults write -bool false`. Recording which one we saw is the whole reason
-/// this type exists; collapsing them is how the original shell guide loses a
-/// user's custom autohide-delay permanently.
 struct DockState: Codable {
-	var autohide: String?          // nil == key absent
+	var autohide: String?
 	var autohideDelay: String?
-	var corners: [String: String?] // "topleft" -> value, nil == absent
-	/// Retired. Kept only so state files written by an earlier version still
-	/// decode; nothing reads or writes it now. Setting NSGlobalDomain
-	/// `_HIHideMenuBar` turned out to be a system-wide footgun: it is read by
-	/// HIToolbox at app launch, so it never applied to an already-running game,
-	/// while a crash between enable and restore left EVERY app on the machine
-	/// hiding its menu bar with no state file left to repair it.
+	var corners: [String: String?]
 	var menuBarAutohide: String?
 
-	/// NSGlobalDomain `CGDisableCursorLocationMagnification`, the "shake the mouse to
-	/// find the cursor" accessibility feature. nil == key absent.
-	///
-	/// Recorded because turning it off writes a global preference that outlives the
-	/// process: measured, a `kill -9` while it was off left it off for the whole
-	/// machine. So it goes in the same state file as the Dock and is replayed on the
-	/// next launch if a session was interrupted.
 	var findCursorDisabled: String?
 
-	/// macOS names the hot corners `tl`, `tr`, `bl`, `br` — not `topleft` and friends,
-	/// which is what this used to write.
-	///
-	/// The consequence was worse than the feature not working. `defaults write` creates
-	/// whatever key it is given, so every session wrote four keys macOS has never read
-	/// (`wvous-topleft-corner` and so on) while the real corners stayed armed. The
-	/// feature reported success, did nothing, and left junk in the user's Dock
-	/// preferences. `cleanUpLegacyCornerKeys()` removes it.
 	static let cornerNames = ["tl", "tr", "bl", "br"]
 
-	/// The misspelled keys written by earlier versions.
 	static let legacyCornerNames = ["topleft", "topright", "bottomleft", "bottomright"]
 
 	static func capture() -> DockState {
@@ -128,10 +81,6 @@ enum Dock {
 		Sh.run("/usr/bin/killall", ["Dock"])
 	}
 
-	// The menu bar lives in NSGlobalDomain, not com.apple.dock. It owns the top
-	// screen edge the same way the Dock owns the bottom one, which is what an
-	// escaped cursor hits when a game pans the view upward.
-
 	static func readGlobal(_ key: String) -> String? {
 		let (status, out) = Sh.run("/usr/bin/defaults", ["read", "-g", key])
 		return status == 0 ? out : nil
@@ -146,19 +95,6 @@ enum Dock {
 	}
 }
 
-// MARK: - Shake to find the cursor
-
-/// Turns off "shake the mouse pointer to locate", which otherwise magnifies and
-/// reveals the cursor mid-game the moment the pointer moves quickly.
-///
-/// It overrides a hidden cursor, which is the point of an accessibility feature and
-/// exactly wrong during a game: a fast flick of the mouse while aiming is enough to
-/// put the macOS pointer back on screen.
-///
-/// `SLSPackagesDisableFindCursor` applies immediately, unlike writing the preference
-/// and waiting for something to re-read it. It does write that preference though, so
-/// the original value is captured into `DockState` and restored, and a session
-/// interrupted before restoring is replayed at the next launch.
 enum FindCursor {
 	static let key = "CGDisableCursorLocationMagnification"
 
@@ -186,8 +122,6 @@ enum FindCursor {
 		return err == 0
 	}
 
-	/// Puts it back exactly as it was, including "the key did not exist", which is not
-	/// the same as the key being present and false.
 	static func restore(to recorded: String?) {
 		if let recorded {
 			setDisabled(recorded == "1")
@@ -198,45 +132,20 @@ enum FindCursor {
 	}
 }
 
-// MARK: - Game mode
-
 final class GameMode {
-	/// Dock changes run here, never on the main thread.
-	///
-	/// Applying or restoring spawns several `defaults` processes and a `killall
-	/// Dock`, which together take a few hundred milliseconds. Run on the main thread
-	/// that blocks the run loop, so the activation blink — a main-thread Timer —
-	/// could not draw a frame until the work finished. Serial, so an enable can never
-	/// interleave with a restore.
 	private let dockQueue = DispatchQueue(label: "com.deadeye.dockwork", qos: .userInitiated)
 
 	private let stateURL: URL
 	private(set) var isActive = false
 
-	/// On by default, like the other three hold-backs. A hot corner fires from the
-	/// same escaped pointer that everything else here defends against — throwing you
-	/// into Mission Control mid-fight — and it is restored when the game exits, so the
-	/// cost of having it on is nothing and the cost of having it off is a lost session.
-	///
-	/// Kept as a `Bool?` read rather than `bool(forKey:)` so that "absent" means
-	/// "default" instead of "off", which is what made this silently off for everyone.
 	var disableHotCorners: Bool {
 		UserDefaults.standard.object(forKey: "disableHotCorners") as? Bool ?? true
 	}
 
-	/// Whether to hold the Dock down while a game runs. On by default, because it is
-	/// the reason this class exists — the Dock's screen-edge tracking stays armed over
-	/// a fullscreen game and steals the pointer mid-aim.
-	///
-	/// It had no switch at all until now, which made the menu quietly inconsistent:
-	/// the menu bar, hot corners and overlay apps could each be turned off, and the
-	/// most invasive of the four could not.
 	var holdDock: Bool {
 		UserDefaults.standard.object(forKey: "holdDock") as? Bool ?? true
 	}
 
-	/// On by default, like the other hold-backs. A quick flick of the mouse while
-	/// aiming is enough to trigger it, and it deliberately overrides a hidden cursor.
 	var suppressFindCursor: Bool {
 		UserDefaults.standard.object(forKey: "suppressFindCursor") as? Bool ?? true
 	}
@@ -248,19 +157,6 @@ final class GameMode {
 		stateURL = support.appendingPathComponent("dock-state.json")
 	}
 
-	/// `autohide-delay` of 100000 is a value no human sets: it is this app's marker
-	/// and nothing else. If it is present when no state file exists, a previous run
-	/// was interrupted between applying and restoring, and the record of what to
-	/// restore to is gone. Absent that record, the safe assumption is the macOS
-	/// default — the Dock's delay simply should not exist.
-	///
-	/// This is the lesson from stranding `_HIHideMenuBar` across an entire machine:
-	/// a restore that depends on a file, and then deletes that file, has no way back
-	/// if it is interrupted. A setting worth changing is worth being able to detect
-	/// as wrong without any bookkeeping.
-	/// Deletes the four keys earlier versions invented. They are inert — macOS never
-	/// reads them — but they are ours, they are wrong, and leaving litter in someone
-	/// else's preferences is not acceptable just because it is harmless.
 	static func cleanUpLegacyCornerKeys() {
 		var removed: [String] = []
 		for name in DockState.legacyCornerNames {
@@ -281,9 +177,6 @@ final class GameMode {
 		Dock.restart()
 	}
 
-	/// A leftover state file means a previous run was killed before it could
-	/// restore — SIGKILL, a panic, or power loss. Replay it now, because
-	/// nothing else ever will.
 	func recoverIfNeeded() -> Bool {
 		guard FileManager.default.fileExists(atPath: stateURL.path) else { return false }
 		restore(synchronously: true)
@@ -292,9 +185,6 @@ final class GameMode {
 
 	func enable() {
 		guard !isActive else { return }
-		// Claim immediately. Applying takes ~65ms of `defaults` subprocesses, and an
-		// app-activation notification can drive a second poll inside that window;
-		// setting this at the end let enable() re-enter itself.
 		isActive = true
 
 		Stats.recordSession()
@@ -303,19 +193,12 @@ final class GameMode {
 		let findCursor = suppressFindCursor
 		let url = stateURL
 
-		// Nothing to apply and nothing to capture: skip the subprocesses and the Dock
-		// restart entirely rather than writing a state file that restores to itself.
 		guard dock || corners || findCursor else {
 			Log.write("DOCK enable: nothing to hold back (dock and hot corners both off)")
 			return
 		}
 
 		dockQueue.async {
-			// Capturing reads six defaults keys, so it belongs off the main thread too.
-			// It must run before the writes below, which the serial queue guarantees.
-			//
-			// Only capture if no session is already recorded, otherwise a second
-			// enable would save the *disabled* Dock as the state to return to.
 			if !FileManager.default.fileExists(atPath: url.path) {
 				let state = DockState.capture()
 				if let data = try? JSONEncoder().encode(state) {
@@ -344,16 +227,10 @@ final class GameMode {
 		}
 	}
 
-	/// Safe to call repeatedly and from a terminate handler; a missing state file
-	/// means there is nothing to undo.
 	func restore(synchronously: Bool = false) {
 		guard let data = try? Data(contentsOf: stateURL),
 		      let state = try? JSONDecoder().decode(DockState.self, from: data)
 		else {
-			// Drop an unreadable or corrupt file rather than leaving it in place:
-			// enable() skips capturing state whenever a file exists, so a file we
-			// cannot decode would otherwise make every later session restore to
-			// nothing.
 			Log.write("DOCK state file unreadable — self-healing instead of discarding it")
 			try? FileManager.default.removeItem(at: stateURL)
 			Self.selfHeal()
@@ -361,8 +238,6 @@ final class GameMode {
 			return
 		}
 
-		// Flip the flag first and on this thread, so the caller sees the state change
-		// immediately and can start the blink. Everything below is subprocess work.
 		isActive = false
 
 		let url = stateURL
@@ -380,10 +255,6 @@ final class GameMode {
 			}
 
 			for name in DockState.cornerNames {
-				// Only act on corners this state file actually recorded. A file written
-				// by a version that used the misspelled key names has nothing to say
-				// about "tl", and treating that silence as "there was no value" would
-				// delete a hot corner the user had configured.
 				guard let recorded = state.corners[name] else { continue }
 				if let value = recorded {
 					Dock.write("wvous-\(name)-corner", int: value)
@@ -399,22 +270,9 @@ final class GameMode {
 			Log.write("DOCK restored: autohide=\(Dock.read("autohide") ?? "absent") "
 				+ "delay=\(Dock.read("autohide-delay") ?? "absent")")
 		}
-		// On quit or a signal there is no later run loop to service an async block, so
-		// the work has to finish before this returns.
-		//
-		// `dockQueue.sync` rather than calling `work()` directly: enable() queues its
-		// writes on this same serial queue, and running the restore off-queue let it
-		// overtake them. A quit ~40ms after arming did exactly that — the restore wrote
-		// the Dock back and deleted the state file, then the queue drained and enable's
-		// `autohide=true` + `autohide-delay=100000` landed on top, leaving the Dock
-		// hidden with nothing left to undo it. The next launch then captured that as
-		// the user's own preference and "restored" their Dock to auto-hiding for good.
-		// Going through the queue keeps the two in the order they were requested.
 		if synchronously { dockQueue.sync(execute: work) } else { dockQueue.async(execute: work) }
 	}
 }
-
-// MARK: - Bottle inspection
 
 enum Bottles {
 	struct Info {
@@ -441,7 +299,6 @@ enum Bottles {
 		}
 	}
 
-	/// Registry lines look like: "GrabFullscreen"="Y"
 	private static func value(of key: String, in text: String) -> String? {
 		for line in text.split(separator: "\n") where line.hasPrefix("\"\(key)\"=") {
 			let parts = line.split(separator: "\"", omittingEmptySubsequences: false)
@@ -451,36 +308,24 @@ enum Bottles {
 	}
 }
 
-// MARK: - App
-
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	private let gameMode = GameMode()
 	private let cursorGuard = CursorGuard()
 	private let hotKey = GlobalHotKey()
 
-	/// Separate from the on/off key so a player can hand themselves the cursor for a
-	/// map without disarming everything else Deadeye is holding back.
 	private let cursorHotKey = GlobalHotKey()
 
-	/// F2 is what was asked for and it is registered, but on a Mac that has not been
-	/// told to send function keys it is brightness and the key code never arrives. So
-	/// the Control-Option combination stays registered alongside it rather than being
-	/// replaced, and the player has something that works either way.
 	private let cursorFunctionKey = GlobalHotKey()
 	private let shield = MenuBarShield()
 	private let veil = MenuBarVeil()
 	private let cursorSuppressor = CursorSuppressor()
 	private let suspender = AppSuspender()
 
-	/// On by default: notch overlays draw over the game and redirecting clicks cannot
-	/// stop that, so quitting them is the only real fix.
 	private var suspendApps: Bool {
 		get { UserDefaults.standard.object(forKey: "suspendApps") as? Bool ?? true }
 		set { UserDefaults.standard.set(newValue, forKey: "suspendApps") }
 	}
 
-	/// On by default: unlike cursor confinement, the shield never touches pointer
-	/// movement, so it cannot affect aiming.
 	private var shieldMenuBar: Bool {
 		get { UserDefaults.standard.object(forKey: "shieldMenuBar") as? Bool ?? true }
 		set { UserDefaults.standard.set(newValue, forKey: "shieldMenuBar") }
@@ -490,19 +335,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	private var signalSources: [DispatchSourceSignal] = []
 
 	private var detectedGames: [String] = []
-	/// Set when *we* turned game mode on because a game appeared, so that a
-	/// manual toggle is never undone by the watcher.
 	private var enabledAutomatically = false
 
-	/// Set when the user switches Deadeye off by hand *while a game is running*, and
-	/// cleared when that game exits.
-	///
-	/// Without it, "Activate automatically" fought the user: turning Deadeye off
-	/// mid-game meant the next poll saw a running game and an inactive app and
-	/// switched it straight back on, about a second later. A manual decision has to
-	/// outrank the automation for as long as the thing it was made about is still
-	/// true — so the override lasts for that game session and no longer. The next
-	/// game launch arms automatically again, which is what the setting promises.
 	private var manualOverrideThisSession = false
 
 	private let updateMenuItem = NSMenuItem(
@@ -512,13 +346,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	private let statusMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
 	private let statsMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
 	private let cursorStatusMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-	/// Control-Option-Command-G rather than a plain ⌘G: games bind bare
-	/// Command-letter combinations, and CrossOver forwards them into the bottle.
 	private let toggleMenuItem = NSMenuItem(title: "Turn Deadeye Off", action: #selector(toggle), keyEquivalent: "g")
 
-	/// Held rather than looked up by tag. The toggles live in a submenu now, and
-	/// `menu.item(withTag:)` only searches one level — a tag lookup would silently
-	/// stop finding them and the checkmarks would quietly stop updating.
 	private let autoItem = NSMenuItem(title: "Activate automatically",
 	                                  action: #selector(toggleAutoEnable), keyEquivalent: "")
 	private let shieldItem = NSMenuItem(title: "Menu bar clicks",
@@ -534,11 +363,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	private let loginItem = NSMenuItem(title: "Launch at login",
 	                                   action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
 
-	/// Control-Option-C. Two modifiers rather than three because this is the one
-	/// pressed mid-game, and no Command because CrossOver forwards Command combos
-	/// into the bottle. F2 was the obvious candidate and does not work: unless the
-	/// user has turned on "use F1, F2 as standard function keys", F2 is brightness
-	/// and the key code never reaches a hot key.
 	private let cursorItem = NSMenuItem(title: "Show the macOS cursor",
 	                                    action: #selector(toggleCursorVisible), keyEquivalent: "c")
 
@@ -547,9 +371,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		set { UserDefaults.standard.set(newValue, forKey: "autoEnable") }
 	}
 
-	/// Off, and it should stay off. Measured at 311 clamps in one play session:
-	/// confining the cursor confines the aim, because in this game the cursor
-	/// position *is* the aim input. See the Cursor Guard section of the README.
 	private var guardCursor: Bool {
 		get { UserDefaults.standard.object(forKey: "guardCursor") as? Bool ?? false }
 		set { UserDefaults.standard.set(newValue, forKey: "guardCursor") }
@@ -558,19 +379,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	func applicationDidFinishLaunching(_ notification: Notification) {
 		NSApp.setActivationPolicy(.accessory)
 
-		// Before anything that can put a dialog on screen, and before the shield's
-		// event tap goes up. A tap created from the disk image raises the
-		// Accessibility prompt for a copy that is about to stop existing, which is
-		// exactly the double-prompt this avoids.
 		if Install.moveToApplicationsIfNeeded() { return }
 
-		// Mouse association is system-wide, so a lock left behind by a previous
-		// run that was killed would freeze the cursor for every app. Always
-		// release before doing anything else.
 		CursorGuard.releaseStaleLock()
 
-		// The support schedule is measured from installation, so the date has to exist
-		// before anything can be due. Migration runs alongside it, once.
 		GameMode.cleanUpLegacyCornerKeys()
 		Stats.recordFirstLaunchIfNeeded()
 		Stats.migrateLegacySupportFlag()
@@ -600,18 +412,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			self?.toggleCursorVisible()
 		}
 
-		// Added to the common run loop modes rather than scheduled plainly. A plain
-		// scheduled timer only fires in the default mode, so opening Deadeye's own menu
-		// or putting up an alert stopped the poll entirely — and with it every chance
-		// to notice the game was no longer frontmost and stand everything down.
 		let poller = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
 			self?.poll()
 		}
 		RunLoop.main.add(poller, forMode: .common)
 		timer = poller
 
-		// React to focus changes immediately rather than up to a poll late: after
-		// Cmd-Tab the shield must come down at once or the menu bar feels dead.
 		NSWorkspace.shared.notificationCenter.addObserver(
 			forName: NSWorkspace.didActivateApplicationNotification,
 			object: nil, queue: .main) { [weak self] _ in self?.poll() }
@@ -639,21 +445,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		veil.lower()
 		cursorSuppressor.lower()
 		cursorGuard.stop()
-		// Synchronous: the process is going away, so a queued async block would never
-		// run and the Dock would be left suppressed.
 		gameMode.restore(synchronously: true)
 	}
 
-	// MARK: Menu
-
-	// MARK: Menu chrome
-
-	/// SF Symbol at a consistent size, or nil.
-	///
-	/// Nil rather than a placeholder on purpose: `NSImage(systemSymbolName:)` returns
-	/// nil for a symbol that does not exist on the running macOS, and an item with no
-	/// icon reads as perfectly ordinary while a question-mark box reads as a bug. That
-	/// makes it safe to use symbols added after macOS 13 without gating each one.
 	private func symbol(_ name: String) -> NSImage? {
 		guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
 		else { return nil }
@@ -661,9 +455,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
 	}
 
-	/// A group label. macOS 14 has a real API for these; on 13 the same effect is
-	/// drawn by hand rather than dropping the grouping entirely, because the grouping
-	/// is what stops the settings block reading as one long undifferentiated list.
 	private func sectionHeader(_ title: String) -> NSMenuItem {
 		if #available(macOS 14.0, *) {
 			return NSMenuItem.sectionHeader(title: title)
@@ -678,8 +469,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		return item
 	}
 
-	/// The app's own name and version, so the menu identifies itself the way a real
-	/// app's does rather than opening straight into a list of checkboxes.
 	private func headerItem() -> NSMenuItem {
 		let item = NSMenuItem()
 		item.isEnabled = false
@@ -699,11 +488,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		return item
 	}
 
-	/// A status line led by a coloured dot.
-	///
-	/// The dot carries the state at a glance; the words carry the detail. Colour alone
-	/// would be unreadable to anyone who cannot distinguish it, which is why the text
-	/// always says the same thing the colour does.
 	private func statusText(_ text: String, _ colour: NSColor) -> NSAttributedString {
 		let line = NSMutableAttributedString(string: "\u{25CF}  ", attributes: [
 			.font: NSFont.systemFont(ofSize: 9),
@@ -725,8 +509,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 		menu.addItem(headerItem())
 
-		// Hidden unless they apply, and first because they are the only rows that need
-		// acting on rather than reading.
 		updateMenuItem.target = self
 		updateMenuItem.action = #selector(openReleases)
 		updateMenuItem.isHidden = true
@@ -746,15 +528,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 		menu.addItem(.separator())
 
-		// The one verb, alone, so it cannot be mistaken for a setting.
 		toggleMenuItem.target = self
 		toggleMenuItem.keyEquivalentModifierMask = [.control, .option, .command]
 		menu.addItem(toggleMenuItem)
 
-		// The second verb, and the only one that earns a place beside the first: it is
-		// the thing a player reaches for mid-game, when a map wants a cursor Deadeye is
-		// holding down. Hidden unless a game is running, so the front menu still reads
-		// as one verb the rest of the time.
 		cursorItem.target = self
 		cursorItem.keyEquivalent = String(UnicodeScalar(NSF2FunctionKey)!)
 		cursorItem.keyEquivalentModifierMask = []
@@ -762,9 +539,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 		menu.addItem(.separator())
 
-		// Everything configurable lives one level down. The app's promise is that you
-		// never have to configure it, and a flat list of six switches in the front menu
-		// contradicts that before you have read a word of it.
 		let settings = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
 		settings.submenu = buildSettingsMenu()
 		menu.addItem(settings)
@@ -788,9 +562,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		statusItem.menu = menu
 	}
 
-	/// Grouped by what each switch actually scopes to, which is the distinction that
-	/// was missing: four of them describe what macOS is held back from doing while a
-	/// game runs, and two describe how Deadeye itself behaves.
 	private func buildSettingsMenu() -> NSMenu {
 		let m = NSMenu()
 		m.delegate = self
@@ -814,16 +585,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 		m.addItem(.separator())
 
-		// A single way back to the shipped configuration. Named for what it does
-		// rather than presented as a "preset", because one restore point is not a
-		// preset system and calling it one would imply switching between several.
 		let reset = NSMenuItem(title: "Reset to recommended",
 		                       action: #selector(resetToRecommended), keyEquivalent: "")
 		reset.target = self
 		m.addItem(reset)
 
-		// The Dock and hot-corner settings are read when Deadeye arms, not applied
-		// live, and silently doing nothing until the next game would look broken.
 		let note = NSMenuItem()
 		note.isEnabled = false
 		note.attributedTitle = NSAttributedString(
@@ -849,8 +615,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 	private func buildSupportMenu() -> NSMenu {
 		let m = NSMenu()
-		// The lifetime totals sit here rather than in the front menu: it is the longest
-		// string the app produces and it was setting the width of the whole menu.
 		statsMenuItem.isEnabled = false
 		m.addItem(statsMenuItem)
 		m.addItem(.separator())
@@ -865,12 +629,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	}
 
 	func menuNeedsUpdate(_ menu: NSMenu) {
-		// Lock state changes faster than the 1.5s poll, so recompute on open or
-		// the status lines would show stale information at the moment they are read.
 		refreshStatus()
 
-		// Every menu that can show these shares the same item objects, so the state is
-		// synced once regardless of which menu is opening.
 		autoItem.state = autoEnable ? .on : .off
 		shieldItem.state = shieldMenuBar ? .on : .off
 		dockItem.state = gameMode.holdDock ? .on : .off
@@ -891,30 +651,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		toggleMenuItem.title = gameMode.isActive ? "Turn Deadeye Off" : "Turn Deadeye On"
 	}
 
-	/// True when click redirection is switched on but macOS has not granted the
-	/// Accessibility permission it needs, so the headline feature is silently inert.
 	private var accessibilityMissing: Bool {
 		shieldMenuBar && !MenuBarShield.ensureAccessibility(prompt: false)
 	}
 
-	/// The icon stays the brand mark in every state, including when a permission is
-	/// missing. Swapping it for a warning symbol would mean users never learn to
-	/// recognise the app in their menu bar. The missing permission is surfaced by the
-	/// warning row at the top of the menu and by the status line instead.
 	private func icon(active: Bool) -> NSImage? {
 		Icon.menuBar(active ? .active : .idle, pointSize: 18)
 	}
 
-	// MARK: Watcher
-
 	private var lastLoggedGames: [String] = []
 
-	/// Tracks the play → stopped transition, which is the only safe moment to show
-	/// anything on screen.
 	private var wasPlaying = false
 
-	/// Tracks the inactive → active edge, so the blink fires on engaging rather than
-	/// on every poll while a game runs.
 	private var wasActive = false
 
 	private var pulseTimer: Timer?
@@ -928,8 +676,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			Log.write("games detected -> \(detectedGames)  guardPref=\(guardCursor)")
 		}
 
-		// A game exiting ends any manual override: the decision was about that
-		// session, so it must not silently disable automation for every future one.
 		if detectedGames.isEmpty, manualOverrideThisSession {
 			manualOverrideThisSession = false
 			Log.write("MANUAL override cleared — game exited, automation resumes")
@@ -939,14 +685,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			if !detectedGames.isEmpty, !gameMode.isActive, !manualOverrideThisSession {
 				setActive(true, automatic: true)
 			} else if detectedGames.isEmpty, gameMode.isActive, enabledAutomatically {
-				// Only auto-disable what we auto-enabled, so a manual toggle
-				// survives the game exiting.
 				setActive(false, automatic: false)
 			}
 		}
 
-		// Safety net only: catches a state change made anywhere that bypassed
-		// setActive, such as launch-time recovery. Normally a no-op.
 		if gameMode.isActive != wasActive {
 			pulse(to: gameMode.isActive)
 			wasActive = gameMode.isActive
@@ -956,18 +698,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		refreshStatus()
 	}
 
-	/// One blink on activation, ~450ms.
-	///
-	/// This is the only feedback that Deadeye engaged. Everything else it does is by
-	/// design invisible, so without this a user has no way to tell it worked — which
-	/// is exactly the confusion that made the menu bar bug so hard to pin down.
-	///
-	/// Deliberately confined to the menu bar icon. A full-screen flourish would mean
-	/// drawing over a game at the very moment it is taking the display, which is the
-	/// thing this whole app exists to prevent.
 	private func pulse(to target: Bool) {
-		// Already mid-blink toward this very state: leave it running rather than
-		// restarting from frame one, which reads as a stutter.
 		if pulseTimer != nil, pulseTarget == target { return }
 		pulseTarget = target
 		Log.write("BLINK start -> \(target ? "active" : "idle")")
@@ -975,7 +706,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		let start = Date()
 		let duration = 0.45
 
-		// Close in the state being left, open in the state being entered.
 		let leaving: Icon.State = target ? .idle : .active
 		let entering: Icon.State = target ? .active : .idle
 
@@ -991,20 +721,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 				return
 			}
 
-			// sin gives 0 → 1 → 0 across the duration: lids close, then open again.
 			let progress = elapsed / duration
 			let lidClose = CGFloat(sin(progress * .pi))
 
-			// The shape swaps at the midpoint, while the eye is shut. That hides the
-			// change entirely — the smooth idle lid and the angular hunter wedge are
-			// too dissimilar to interpolate into one another without looking broken.
 			let state = progress < 0.5 ? leaving : entering
 			self.statusItem.button?.image = Icon.menuBar(state, pointSize: 18, lidClose: lidClose)
 		}
 	}
 
 	private func refreshStatus() {
-		// The pulse owns the image while it runs.
 		if pulseTimer == nil {
 			statusItem.button?.image = icon(active: gameMode.isActive)
 		}
@@ -1021,9 +746,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			statusMenuItem.attributedTitle = statusText("Idle", .tertiaryLabelColor)
 		}
 
-		// Surfaced because the lock is otherwise invisible: it engages only while
-		// the game holds focus, so "is it actually on right now?" is a question
-		// worth being able to answer without guessing.
 		let cursor: String
 		if !guardCursor {
 			cursor = "off"
@@ -1034,14 +756,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		}
 		let bar: String
 		let barColour: NSColor
-		// Kept deliberately terse: this line and the one above set the menu's minimum
-		// width, and a long status made every other row look cramped.
 		if !shieldMenuBar {
 			bar = "Menu bar unguarded"; barColour = .tertiaryLabelColor
 		} else if accessibilityMissing {
 			bar = "Needs Accessibility"; barColour = .systemRed
 		} else if shield.isUp {
-			// Which of the two is happening matters: one keeps the shot, one loses it.
 			bar = veil.isUp && cursorSuppressor.isUp
 				? "Clicks go to the game"
 				: "Clicks discarded"
@@ -1061,13 +780,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		_ = cursor
 	}
 
-	// MARK: Actions
-
-	/// Hands the macOS arrow to the player, or takes it back.
-	///
-	/// Only while a game is running: outside that the arrow is the system's and
-	/// nothing is suppressing it, so a toggle would set a flag nobody reads and the
-	/// key would feel broken.
 	@objc private func toggleCursorVisible() {
 		guard !detectedGames.isEmpty else {
 			Log.write("CURSOR toggle ignored — no game running")
@@ -1082,9 +794,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	@objc private func toggle() {
 		let turningOn = !gameMode.isActive
 
-		// Switching off while a game is running is the case the override exists for.
-		// Switching on by hand clears it, so the user can undo their own decision
-		// without waiting for the game to exit.
 		if turningOn {
 			manualOverrideThisSession = false
 		} else if !detectedGames.isEmpty {
@@ -1096,12 +805,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		setActive(turningOn, automatic: false)
 	}
 
-	/// The single place Deadeye turns on or off.
-	///
-	/// It animates in the same turn of the run loop as the state change and syncs
-	/// `wasActive`, so `poll()` cannot fire a second, late blink for the same
-	/// transition. Every caller must come through here rather than touching
-	/// `gameMode` directly.
 	private func setActive(_ active: Bool, automatic: Bool) {
 		guard active != gameMode.isActive else { return }
 
@@ -1109,7 +812,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		enabledAutomatically = automatic
 
 		pulse(to: active)
-		wasActive = active      // claim the edge so poll() does not re-animate it
+		wasActive = active
 		refreshStatus()
 	}
 
@@ -1130,13 +833,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		UserDefaults.standard.set(!gameMode.holdDock, forKey: "holdDock")
 	}
 
-	/// Back to the shipped configuration in one step: everything macOS does that can
-	/// interrupt a game is held back, and Deadeye arms itself.
-	///
-	/// Deliberately does not touch **Launch at login**. That one is a login item
-	/// registered with the system rather than a preference of ours, so silently
-	/// adding or removing it under the word "reset" would be a surprise with an
-	/// effect outside the app.
 	@objc private func resetToRecommended() {
 		let defaults = UserDefaults.standard
 		defaults.set(true, forKey: "shieldMenuBar")
@@ -1179,9 +875,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		}
 	}
 
-	/// Shown once, after five protected sessions, and never again either way.
-	/// Shown at most twice in a lifetime — two days after install and a week after —
-	/// and only when a game has just finished, never mid-session and never at launch.
 	private func maybeAskForSupport() {
 		guard let ask = Stats.dueSupportAsk else { return }
 		Stats.markAsked(ask)
@@ -1230,8 +923,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		NSWorkspace.shared.open(Updater.releasesURL)
 	}
 
-	/// Manual check: always reports back, including "you are up to date", because a
-	/// button that silently does nothing reads as broken.
 	@objc private func checkForUpdates() {
 		Updater.check(force: true) { [weak self] result in
 			self?.refreshStatus()
@@ -1262,9 +953,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		}
 	}
 
-	/// Announced at most once per version, and never while a game is running — an
-	/// update dialog over a fullscreen game is exactly the interruption this app
-	/// exists to prevent.
 	private func announceUpdateIfAppropriate() {
 		guard detectedGames.isEmpty, let version = Updater.availableVersion,
 		      Updater.shouldAnnounce(version) else { return }
@@ -1283,9 +971,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		NSWorkspace.shared.open(URL(string: "https://github.com/inulute/deadeye")!)
 	}
 
-	/// Sharing is the ask that costs a user nothing and grows the audience that any
-	/// future funding comes from, so it sits alongside the money one rather than
-	/// being an afterthought.
 	@objc private func shareApp() {
 		let text = """
 		Deadeye: a free menu bar app that stops macOS interrupting Mac games. \
@@ -1324,13 +1009,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		syncCursorGuard()
 	}
 
-	/// The guard is tied to a game being *detected*, not to Dock suppression, so
-	/// it protects the cursor even when auto-enable is off. Tying it to a live
-	/// game process is also the safety property that matters: if detection ever
-	/// stops working, the guard releases the cursor rather than trapping it.
 	private func syncCursorGuard() {
-		// gameNames must be assigned before anything reads it, including the
-		// frontmost logging, or the log reports an empty game list on first poll.
 		cursorGuard.gameNames = detectedGames
 		cursorGuard.logFrontmostIfChanged()
 		if guardCursor, !detectedGames.isEmpty {
@@ -1339,8 +1018,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			cursorGuard.stop()
 		}
 
-		// The shield follows game focus, not merely a game running: it must come
-		// down the moment you Cmd-Tab out, or your own menu bar would be dead.
 		if suspendApps, !detectedGames.isEmpty {
 			suspender.suspend()
 		} else {
@@ -1349,16 +1026,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 		if detectedGames.isEmpty, wasPlaying {
 			wasPlaying = false
-			// A cursor handed over for a map belongs to that session. Cleared here
-			// rather than in `lower()`, which runs on every Cmd-Tab and would take the
-			// cursor back the moment the player checked something in another window.
 			cursorSuppressor.isPaused = false
-			// Forced. A game finishing is the one moment the answer matters, and the
-			// ordinary check is rate limited to once a day — but the "checked already"
-			// timestamp is written to disk while the answer it produced only lives in
-			// memory. So for a whole day after any restart the check would decline to
-			// run, find nothing cached, and report up to date. A handful of requests a
-			// day is nowhere near GitHub's limit.
 			Updater.check(force: true) { [weak self] _ in
 				self?.refreshStatus()
 				self?.announceUpdateIfAppropriate()
@@ -1370,15 +1038,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 		shield.gameNames = detectedGames
 		if shieldMenuBar, !detectedGames.isEmpty, gameIsFrontmost() {
-			// Order matters. The game's window bounds decide whether a click can be
-			// handed over; the veil and the suppressor decide whether doing so is
-			// safe. All three are settled before the tap goes up.
 			shield.refreshGameWindows()
 			if shield.gameCoversStrip {
 				veil.raise()
 				cursorSuppressor.raise()
-				// Menu bar managers reset the alpha, and a processed click re-reveals
-				// the arrow, so both are re-applied every poll.
 				veil.reassert()
 				cursorSuppressor.reassert()
 			} else {
@@ -1401,8 +1064,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		}
 	}
 
-	/// Same test the guard uses: the game runs as its own regular app named after
-	/// the executable, with no bundle identifier.
 	private func gameIsFrontmost() -> Bool {
 		guard let front = NSWorkspace.shared.frontmostApplication else { return false }
 		if let bundle = front.bundleIdentifier?.lowercased(), bundle.hasPrefix("com.codeweavers") {
@@ -1443,12 +1104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
 	}
 
-	/// Kept as a constant rather than inline so the funding link lives in exactly
-	/// one place alongside the README badge.
 	static let donateURL = URL(string: "https://support.inulute.com")!
 
-	/// Opens the exact pane, because "Privacy & Security > Accessibility" is several
-	/// clicks deep and easy to land in the wrong list.
 	@objc private func openAccessibilitySettings() {
 		let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
 		NSWorkspace.shared.open(url)
@@ -1462,19 +1119,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		NSApp.terminate(nil)
 	}
 
-	// MARK: Teardown
-
-	/// A DispatchSourceSignal handler runs on a normal queue, unlike a raw
-	/// signal(2) handler, so it is safe to spawn `defaults` from here.
 	private func installSignalHandlers() {
 		for sig in [SIGTERM, SIGINT, SIGHUP] {
 			signal(sig, SIG_IGN)
 			let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
 			source.setEventHandler { [weak self] in
 				self?.shield.lower()
-				// Both come back on their own when the connection dies, but doing it
-				// here means the bar and the cursor are restored before the process
-				// exits rather than a frame later.
 				self?.veil.lower()
 				self?.cursorSuppressor.lower()
 				self?.cursorGuard.stop()
