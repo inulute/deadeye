@@ -47,6 +47,7 @@ final class AppSuspender {
 		let template = """
 		NotchBox
 		TopNotch
+		Alcove
 		Thaw
 		Bartender
 		Ice
